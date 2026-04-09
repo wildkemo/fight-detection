@@ -18,7 +18,7 @@ src/
 │   └── metrics.py             # Precision, Recall, and F1-score calculations
 ├── train.py                   # Main training loop
 ├── evaluate.py                # Script for evaluating the trained model
-└── inference.py               # Script for running inference (potentially real-time)
+└── inference.py               # Script for real-time inference (includes webcam support)
 ```
 
 # Building and Running

@@ -65,4 +65,4 @@ A model that:
 
 - Analyzes short video clips
 - Detects violent behavior
-- Can be extended to real-time systems
+- Will work on CCTV real-time systems
