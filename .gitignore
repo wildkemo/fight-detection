@@ -161,6 +161,7 @@ cython_debug/
 dataset/
 dataset.zip
 processed_data/
+tmp/
 logs/
 checkpoints/
 *.h5

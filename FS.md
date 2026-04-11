@@ -14,6 +14,7 @@ This document describes the organization of the **CCTV Violence Detection System
     │   ├── __init__.py
     │   ├── extract_frames.py # Extracts frames from video files at fixed FPS
     │   ├── normalize.py      # Resizes and normalizes frame pixel values
+    │   ├── pipeline.py       # Orchestrates full preprocessing for a video
     │   └── sequence_builder.py # Groups frames into temporal sequences
     ├── evaluation/          # Scripts for calculating evaluation metrics
     │   ├── __init__.py
