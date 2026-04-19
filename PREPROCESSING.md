@@ -52,27 +52,25 @@ Apply a logarithmic or inverse-logarithmic transformation based on brightness.
 
 ---
 
-## Step 5: Contrast Enhancement (CLAHE)
+## Step 5: Multi-Scale Adaptive Histogram Equalization
 
 **What:**
-Apply Contrast Limited Adaptive Histogram Equalization (CLAHE).
+Apply two simultaneous Contrast Limited Adaptive Histogram Equalization (CLAHE) passes at different grid scales (fine and coarse) and blend the results.
 
 **Why:**
-
-- Enhances local contrast to make human figures stand out from the background without amplifying global noise.
+- **Detail Retention:** The fine-scale pass highlights small textures and clothing details.
+- **Structural Clarity:** The coarse-scale pass manages broader shadows and lighting imbalances.
+- **Natural Look:** Blending the two prevents the "unnatural" or overly noisy appearance common with single-scale equalization, providing a clearer view of fighters in varied environments.
 
 ---
 
-## Step 6: Edge Enhancement (Guided Filter)
+## Step 6: Aggressive High-Pass Sharpening
 
 **What:**
-Apply **Guided Image Filtering** to perform edge-preserving detail enhancement.
+Apply a highly aggressive 2D convolutional filter (e.g., `[[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]`) to the image.
 
 **Why:**
-
-- **Halo Reduction:** Unlike Unsharp Masking, Guided Filters do not produce "ringing" or "halo" artifacts around high-contrast edges.
-- **Noise Suppression:** It enhances structural details (like limbs and physical contact) while maintaining smoothness in non-edge regions.
-- **Clarity:** Specifically makes the separation between moving subjects and static backgrounds more distinct.
+This dramatically boosts the high-frequency components of the image, making edges extremely prominent. It provides a crisp, almost thresholded look, maximizing the structural separation of moving subjects over smooth visual aesthetics.
 
 ---
 
