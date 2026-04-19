@@ -3,6 +3,7 @@ import cv2
 def denoise_frame(frame):
     """
     Step 3: Apply spatial filters to reduce sensor noise.
+    Using Bilateral Filter to strongly preserve edges while removing noise,
+    preventing the blurring caused by Median Blur.
     """
-    # Using Median Blur to preserve edges while removing salt-and-pepper noise
-    return cv2.medianBlur(frame, 5)
+    return cv2.bilateralFilter(frame, 5, 50, 50)
