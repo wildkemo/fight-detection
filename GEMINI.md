@@ -1,52 +1,34 @@
 # Project Overview
 
-This is a deep learning **CCTV Violence Detection System** designed to classify surveillance video segments into two categories: **violence** and **non-violence**. 
+This is a **CCTV Violence Detection Preprocessing System** designed to enhance surveillance video segments to make fighting activities and edges more visible.
 
-The system focuses on learning spatial (appearance) and temporal (motion) patterns to detect fights and aggressive interactions. The planned modeling approach starts with a combination of **CNN and LSTM**, with potential future improvements using 3D CNNs or Transformers. The main challenges addressed include dealing with low-quality CCTV footage, noisy labels, and dataset bias.
+The system focuses on spatial (appearance) and structural (motion boundary) enhancement. The main challenges addressed include dealing with low-quality CCTV footage and varying lighting conditions.
 
 # Project Structure
 
 ```text
 src/
-├── data/
-│   ├── extract_frames.py      # Extracts frames from videos at specified FPS
-│   ├── normalize.py           # Resizes and normalizes pixel values
-│   └── sequence_builder.py    # Groups frames into sequences (16-30 frames)
-├── models/
-│   └── cnn_lstm.py            # Initial CNN + LSTM model implementation
-├── evaluation/
-│   └── metrics.py             # Precision, Recall, and F1-score calculations
-├── train.py                   # Main training loop
-├── evaluate.py                # Script for evaluating the trained model
-└── inference.py               # Script for real-time inference (includes webcam support)
+└── data/
+    ├── preprocess.py          # Orchestrates the 8-step preprocessing pipeline
+    ├── extract_frames.py      # Step 1: Video frame extraction
+    ├── resize.py              # Step 2: Uniform resizing
+    ├── denoise.py             # Step 3: Spatial noise reduction
+    ├── dynamic_range.py       # Step 4: Log/Inverse-Log transformations
+    ├── contrast.py            # Step 5: CLAHE contrast enhancement
+    ├── edge_enhancement.py    # Step 6: Sharpening and boundary detection
+    ├── color_space.py         # Step 7: Color space optimization
+    └── sanity_check.py        # Step 8: Visual validation
 ```
-
-# Building and Running
-
-The project is currently in its early stages and relies on a Python virtual environment. 
-
-To run the basic webcam capture script:
-
-```bash
-# Activate the virtual environment
-source .venv/bin/activate
-
-# Run the vision script
-python src/inference.py
-```
-
-*Note: The project requires `opencv-python` which seems to be used in the `vision.py` script.*
 
 # Development Conventions & Architecture
 
 ## Preprocessing Pipeline
-As outlined in `PREPROCESSING.md`, the data processing pipeline is strict and involves:
-1.  **Frame Extraction:** Sampling video frames at 5–10 FPS to capture motion while reducing redundancy.
-2.  **Resizing:** Normalizing frame dimensions to 224×224.
-3.  **Pixel Normalization:** Scaling pixel values from [0–255] to [0–1].
-4.  **Sequence Construction:** Grouping frames into sequences of 16–30 frames to capture temporal motion context.
-5.  **Data Organization:** Processed data must be organized into strict directories (`dataset/train/violence`, `dataset/test/non_violence`, etc.) to prevent data leakage.
+As outlined in `PREPROCESSING.md`, the data processing pipeline involves:
+1.  **Frame Extraction:** Sampling video frames at 5–10 FPS.
+2.  **Resizing:** Standardizing frame dimensions (e.g., 224x224).
+3.  **Dynamic Range Adjustment:** Applying Log or Inverse-Log transformations based on brightness.
+4.  **Contrast Enhancement:** Using CLAHE to improve local contrast and subject visibility.
+5.  **Edge Enhancement:** Applying sharpening filters to make physical interactions and movement boundaries distinct.
 
-## Modeling and Evaluation
--   **Metrics:** The primary metrics for evaluating the system are Precision, Recall, and the F1-score (which is critical for minimizing false positives in violence detection).
--   **Focus:** Preprocessing and modeling should prioritize the underlying learning signal (motion and human interaction) over superficial visual quality.
+## Focus
+Preprocessing must prioritize making human subjects clearly visible and their movement-defining edges sharp.

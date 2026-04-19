@@ -2,137 +2,114 @@
 
 ## Goal
 
-Prepare videos in a consistent way that helps the model learn useful patterns, not just “clear” images.
+Enhance the visual clarity of subjects (people) and emphasize structural details (edges) within CCTV footage to ensure high-quality visual data for analysis.
 
 ---
 
-## Step 1: Split Dataset by Video
+## Step 1: Extract Frames
 
 **What:**
-Split videos into train/test sets
+Sample frames from video files at a consistent rate (e.g., 5–10 FPS).
 
 **Why:**
-Avoid data leakage (same video in both sets)
+
+- Converts temporal data into discrete spatial snapshots.
+- Balances detail retention with data volume.
 
 ---
 
-## Step 2: Extract Frames
+## Step 2: Resize and Standardize (Skipped)
 
 **What:**
-Sample frames at 5–10 FPS
+Resize all frames to a uniform dimension.
 
 **Why:**
 
-- Reduce redundancy
-- Capture motion effectively
+- _Currently neglected to preserve original resolution for better edge analysis._
 
 ---
 
-## Step 3: Resize Frames
+## Step 3: Denoising
 
 **What:**
-Resize all frames (e.g., 224×224)
+Apply spatial filters (e.g., Median Blur) to reduce sensor noise.
 
 **Why:**
 
-- Required for models
-- Reduces computation
+- Reduces sensor noise common in low-light CCTV footage.
+- Prevents noise from being misidentified as edge detail.
 
 ---
 
-## Step 4: Normalize Pixel Values
+## Step 4: Log transformation (Skipped)
 
 **What:**
-Scale pixels from [0–255] to [0–1]
+Apply a logarithmic or inverse-logarithmic transformation based on brightness.
 
 **Why:**
 
-- Stabilizes training
-- Improves convergence
+- _Currently neglected to prioritize raw intensity values._
 
 ---
 
-## Step 5: Color Processing
+## Step 5: Contrast Enhancement (CLAHE)
 
 **What:**
-
-- Keep RGB OR convert to grayscale
+Apply Contrast Limited Adaptive Histogram Equalization (CLAHE).
 
 **Why:**
 
-- RGB = more info
-- Grayscale = simpler, less noise
+- Enhances local contrast to make human figures stand out from the background without amplifying global noise.
 
 ---
 
-## Step 6: Light Denoising
+## Step 6: Edge Enhancement (Guided Filter)
 
 **What:**
-Apply slight smoothing
+Apply **Guided Image Filtering** to perform edge-preserving detail enhancement.
 
 **Why:**
-Remove noise without losing motion details
+
+- **Halo Reduction:** Unlike Unsharp Masking, Guided Filters do not produce "ringing" or "halo" artifacts around high-contrast edges.
+- **Noise Suppression:** It enhances structural details (like limbs and physical contact) while maintaining smoothness in non-edge regions.
+- **Clarity:** Specifically makes the separation between moving subjects and static backgrounds more distinct.
 
 ---
 
-## Step 7: Contrast Normalization
+## Step 7: Color Space Optimization (Grayscale)
 
 **What:**
-Apply histogram equalization or similar
+Convert all enhanced frames to Grayscale.
 
 **Why:**
-Handle lighting differences across videos
+
+- Grayscale highlights intensity changes and edges, removing redundant color information.
 
 ---
 
-## Step 8: Sequence Construction
+## Step 8: Sanity Check
 
 **What:**
-Group frames into sequences (e.g., 16–30 frames)
+Visually and programmatically inspect processed frames.
 
 **Why:**
-Capture temporal information (motion)
+
+- Ensures that transformations haven't introduced artifacts or resulted in empty/low-variance data.
 
 ---
 
-## Step 9: Label Assignment
+## Step 9: Organized Storage
 
 **What:**
-Assign labels based on the video
+Save processed frames into a structured directory hierarchy: `output/<video_name>/burst_<index>/frame_<index>.jpg`.
 
 **Why:**
-Keep consistency between data and labels
 
----
-
-## Step 10: Save Processed Data
-
-**What:**
-Organize into folders:
-
-dataset/
-train/
-violence/
-non_violence/
-test/
-violence/
-non_violence/
-
-**Why:**
-Simplifies training pipeline
-
----
-
-## Step 11: Sanity Check
-
-**What:**
-Visually inspect processed data
-
-**Why:**
-Ensure no useful info was lost
+- **Per-video:** Keeps data from different sources isolated.
+- **Bursts:** Groups frames into 16-frame sequences for easier temporal analysis.
 
 ---
 
 ## Key Principle
 
-Preprocessing should improve learning signal, not just visual quality.
+Preprocessing must prioritize the visual separation of subjects from their environment and the sharpness of motion-defining edges.

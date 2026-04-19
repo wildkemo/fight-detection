@@ -4,32 +4,26 @@ This document describes the organization of the **CCTV Violence Detection System
 
 ```text
 .
-├── .gitignore               # Standard exclusions for Python and Deep Learning
-├── GEMINI.md                # High-level project overview and setup
+├── .gitignore               # Standard exclusions
+├── GEMINI.md                # High-level project overview
 ├── PREPROCESSING.md         # Detailed preprocessing logic and steps
-├── SCOPE.md                 # Project goals, objectives, and approach
+├── SCOPE.md                 # Project goals and objectives
 ├── FS.md                    # File structure documentation (this file)
-└── src/                     # All source code
-    ├── data/                # Data processing and preprocessing scripts
-    │   ├── __init__.py
-    │   ├── extract_frames.py # Extracts frames from video files at fixed FPS
-    │   ├── normalize.py      # Resizes and normalizes frame pixel values
-    │   ├── pipeline.py       # Orchestrates full preprocessing for a video
-    │   └── sequence_builder.py # Groups frames into temporal sequences
-    ├── evaluation/          # Scripts for calculating evaluation metrics
-    │   ├── __init__.py
-    │   └── metrics.py        # Precision, Recall, and F1-score implementation
-    ├── models/              # Deep learning model architectures
-    │   ├── __init__.py
-    │   └── cnn_lstm.py       # Initial CNN + LSTM implementation
-    ├── evaluate.py          # Main entry point for evaluating a trained model
-    ├── inference.py         # Script for real-time inference (includes webcam support)
-    └── train.py             # Main entry point for training the model
+└── src/
+    └── data/                # Vision-focused modular preprocessing
+        ├── color_space.py    # Step 7: Color space optimization
+        ├── contrast.py       # Step 5: CLAHE contrast enhancement
+        ├── denoise.py        # Step 3: Spatial noise reduction
+        ├── dynamic_range.py  # Step 4: Log/Inverse-Log transformations
+        ├── edge_enhancement.py # Step 6: Sharpening and boundary detection
+        ├── extract_frames.py # Step 1: Video frame extraction
+        ├── preprocess.py     # Main orchestrator for the 9-step pipeline
+        ├── resize.py         # Step 2: Uniform resizing
+        ├── sanity_check.py   # Step 8: Visual inspection and validation
+        └── storage.py        # Step 9: Organized storage and burst grouping
 ```
 
 ## Key Directories
 
-- **src/data/**: Handles the entire pipeline from raw video to ready-to-train tensors.
-- **src/models/**: Contains the neural network architectures used for detection.
-- **src/evaluation/**: Centralized location for custom metrics critical for violence detection (minimizing false positives).
-- **src/** (root): Entry points for high-level operations like `train`, `evaluate`, and `inference`.
+- **src/data/**: Contains the modular implementation of the 8-step image enhancement pipeline. Each file corresponds to a specific step defined in `PREPROCESSING.md`.
+- **preprocess.py**: The central script that imports and executes all 8 preprocessing steps in sequence.

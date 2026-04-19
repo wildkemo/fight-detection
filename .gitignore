@@ -160,6 +160,9 @@ cython_debug/
 # Project Specific
 dataset/
 dataset.zip
+src/data/dataset/
+src/data/output/
+output/
 processed_data/
 tmp/
 logs/
