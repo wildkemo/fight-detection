@@ -15,9 +15,10 @@ from storage import save_frame_organized
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent.parent
 
 DATASET_DIR = BASE_DIR / "dataset" 
-OUTPUT_ROOT = BASE_DIR / "output"
+OUTPUT_ROOT = PROJECT_ROOT / "output"
 BURST_SIZE = 16  # Group frames into sets of 16
 
 def process_video(video_path):
@@ -47,7 +48,7 @@ def process_video(video_path):
         # frame = resize_frame(frame)
 
         # Step 3: Denoising
-        frame = denoise_frame(frame)
+        # frame = denoise_frame(frame)
         
         # Step 4: Dynamic Range Adjustment (Skipped)
         # frame = apply_dynamic_range_adjustment(frame)
@@ -91,11 +92,10 @@ def run_pipeline():
         print("═" * 60 + "\n")
         return
 
+    # Automatically create OUTPUT_ROOT if it doesn't exist
     if not OUTPUT_ROOT.exists():
-        print(f" ❌ Error: Output directory '{OUTPUT_ROOT}' not found.")
-        print("   Create it first using the other file.")
-        print("═" * 60 + "\n")
-        return
+        print(f" 📂 Creating output directory: {OUTPUT_ROOT}")
+        OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
     video_files = glob.glob(str(DATASET_DIR / "*" / "*.mp4"))
 
@@ -104,13 +104,17 @@ def run_pipeline():
         print("═" * 60 + "\n")
         return
 
+    # Sort video files to process "Violence" first, then "NonViolence"
+    # We check if the parent directory is exactly "Violence"
+    video_files.sort(key=lambda x: (0 if os.path.basename(os.path.dirname(x)) == "Violence" else 1, x))
+
     print(f" 📁 Dataset Path: {DATASET_DIR}")
     print(f" 📁 Output Root : {OUTPUT_ROOT}")
     print(f" 📹 Videos Found: {len(video_files)}")
 
     total_saved_frames = 0
 
-    for video_path in sorted(video_files):
+    for video_path in video_files:
         saved_frames = process_video(video_path)
         total_saved_frames += saved_frames
 
