@@ -1,9 +1,10 @@
 import cv2
 
-def optimize_color_space(frame, to_grayscale=False):
+def color_space(frame):
     """
-    Step 7: Convert to Grayscale for structural analysis or maintain RGB.
+    Step 7 (Now Step 1.5): Convert to Grayscale.
+    Expects a BGR image and returns a Grayscale image.
     """
-    if to_grayscale:
+    if len(frame.shape) == 3:
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return frame

@@ -1,6 +1,6 @@
 import cv2
 
-def resize_frame(frame, width=224, height=224):
+def resize(frame, width=224, height=224):
     """
     Step 2: Resize all frames to a uniform dimension.
     """

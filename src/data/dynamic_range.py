@@ -1,22 +1,27 @@
 import numpy as np
 import cv2
 
-def apply_dynamic_range_adjustment(frame):
+def dynamic_range(frame):
     """
-    Step 4: Apply Log or Inverse-Log transformation based on average brightness.
+    Step 4: Contrast Stretching (Normalization).
+    
+    Linearly scales the intensity levels of the image to occupy the 
+    full dynamic range [0, 255].
+    
+    Formula: P_out = (P_in - min) * (255 / (max - min))
     """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    mean_brightness = np.mean(gray)
+    # Convert to float for precise calculation
+    frame_float = frame.astype(np.float32)
     
-    # Constants for transformation
-    c = 255 / np.log(1 + np.max(frame))
+    min_val = np.min(frame_float)
+    max_val = np.max(frame_float)
     
-    if mean_brightness < 127:
-        # Dark image -> Log Transformation to expand dark intensities
-        log_image = c * (np.log(frame + 1))
-        return np.array(log_image, dtype=np.uint8)
-    else:
-        # Bright image -> Inverse-Log (Exp) Transformation
-        # Placeholder for inverse-log logic
-        inv_log_image = np.exp(frame / c) - 1
-        return np.array(inv_log_image, dtype=np.uint8)
+    # Avoid division by zero for uniform images
+    if max_val == min_val:
+        return frame
+    
+    # Apply stretching formula
+    stretched = (frame_float - min_val) * (255.0 / (max_val - min_val))
+    
+    # Clip just in case of rounding errors and convert back to uint8
+    return np.clip(stretched, 0, 255).astype(np.uint8)

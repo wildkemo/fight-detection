@@ -2,14 +2,14 @@ import os
 import sys
 import glob
 from extract_frames import extract_frames
-from resize import resize_frame
-from denoise import denoise_frame
-from dynamic_range import apply_dynamic_range_adjustment
-from contrast import apply_contrast_enhancement
-from edge_enhancement import apply_edge_enhancement
-from color_space import optimize_color_space
+from resize import resize
+from denoise import denoise_guided, median_blur
+from dynamic_range import dynamic_range
+from contrast import contrast
+from sharpen import sharpen
+from color_space import color_space
 from sanity_check import sanity_check
-from storage import save_frame_organized
+from storage import storage
 
 # Configuration
 from pathlib import Path
@@ -20,6 +20,8 @@ PROJECT_ROOT = BASE_DIR.parent.parent
 DATASET_DIR = BASE_DIR / "dataset" 
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 BURST_SIZE = 16  # Group frames into sets of 16
+USE_SINGLE_VIDEO = False  # Set to True to process only one video
+SINGLE_VIDEO_PATH = str(DATASET_DIR / "Violence" / "V_515.mp4")  # Path used when USE_SINGLE_VIDEO is True
 
 def process_video(video_path):
     """
@@ -44,28 +46,32 @@ def process_video(video_path):
     total_frames = len(frames)
     
     for i, frame in enumerate(frames):
-        # Step 2: Resize and Standardize (Skipped)
-        # frame = resize_frame(frame)
+        # --- PHASE 1: CONVERSION TO GRAYSCALE ---
+        # Convert to grayscale immediately for maximum processing speed in all steps
+        frame = color_space(frame)
 
-        # Step 3: Denoising
-        # frame = denoise_frame(frame)
-        
-        # Step 4: Dynamic Range Adjustment (Skipped)
-        # frame = apply_dynamic_range_adjustment(frame)
-        
+        # Step 2: Resize and Standardize (Skipped)
+        # frame = resize(frame)
+
+        # Step 3: Denoising (Combined Median + Guided)
+        frame = median_blur(frame, kernel_size=3)
+        frame = denoise_guided(frame, r=1, eps=1e-2)
+
+        # Step 4: contrast stretching
+        frame = dynamic_range(frame)
+
         # Step 5: Contrast Enhancement
-        frame = apply_contrast_enhancement(frame)
+        frame = contrast(frame)
         
-        # Step 6: Edge Enhancement
-        frame = apply_edge_enhancement(frame)
+        # Step 6: Sharpening 
+        frame = sharpen(frame)
+
         
-        # Step 7: Color Space Optimization
-        frame = optimize_color_space(frame, to_grayscale=True)
 
         # Step 8: Sanity Check
         if sanity_check(frame):
             # Step 9: Organized Storage
-            save_frame_organized(frame, video_path, OUTPUT_ROOT, saved_count, BURST_SIZE)
+            storage(frame, video_path, OUTPUT_ROOT, saved_count, BURST_SIZE)
             saved_count += 1
         
         # Simple Progress Indicator
@@ -97,16 +103,18 @@ def run_pipeline():
         print(f" 📂 Creating output directory: {OUTPUT_ROOT}")
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    video_files = glob.glob(str(DATASET_DIR / "*" / "*.mp4"))
+    if USE_SINGLE_VIDEO:
+        video_files = [SINGLE_VIDEO_PATH]
+        print(f" ℹ️  Single video mode: {SINGLE_VIDEO_PATH}")
+    else:
+        video_files = glob.glob(str(DATASET_DIR / "*" / "*.mp4"))
+        if not video_files:
+            print(f" ⚠️  No .mp4 files found in '{DATASET_DIR}'.")
+            print("═" * 60 + "\n")
+            return
 
-    if not video_files:
-        print(f" ⚠️  No .mp4 files found in '{DATASET_DIR}'.")
-        print("═" * 60 + "\n")
-        return
-
-    # Sort video files to process "Violence" first, then "NonViolence"
-    # We check if the parent directory is exactly "Violence"
-    video_files.sort(key=lambda x: (0 if os.path.basename(os.path.dirname(x)) == "Violence" else 1, x))
+        # Sort video files to process "Violence" first, then "NonViolence"
+        video_files.sort(key=lambda x: (0 if os.path.basename(os.path.dirname(x)) == "Violence" else 1, x))
 
     print(f" 📁 Dataset Path: {DATASET_DIR}")
     print(f" 📁 Output Root : {OUTPUT_ROOT}")

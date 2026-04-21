@@ -1,7 +1,7 @@
 import os
 import cv2
 
-def save_frame_organized(frame, video_path, output_root, saved_count, burst_size):
+def storage(frame, video_path, output_root, saved_count, burst_size):
     """
     Step 9: Save processed frames into a structured directory hierarchy.
     output/<category>/<video_name>/burst_<index>/frame_<index>.jpg
