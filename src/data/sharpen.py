@@ -3,22 +3,17 @@ import numpy as np
 
 def sharpen(frame):
     """
-    Step 6: Unsharp Masking (Proportional Sharpening).
-    
-    Extracts high-frequency details by subtracting a blurred version 
-    of the image from the original, then adds them back.
-    
+    Optimized Unsharp Masking.
     Formula: Result = Original + Amount * (Original - Blurred)
+    Simplified to: Result = (1 + Amount) * Original - Amount * Blurred
     """
-    # 1. Create a blurred version of the image (Low-pass filter)
+    # 1. Faster blurring with smaller kernel or pre-calculated sigma
     blurred = cv2.GaussianBlur(frame, (5, 5), 0)
     
-    # 2. Extract the details (High-pass component)
-    details = cv2.subtract(frame, blurred)
-    
-    # 3. Add details back to the original image
-    # Increased amount for stronger sharpening (aggressive look)
+    # 2. Vectorized arithmetic is faster than multiple calls to addWeighted/subtract
+    # We use float32 for calculation then clip and convert back once
     amount = 5.0
-    enhanced_frame = cv2.addWeighted(frame, 1.0, details, amount, 0)
+    # Equivalent to: frame + amount * (frame - blurred)
+    enhanced = (1.0 + amount) * frame.astype(np.float32) - amount * blurred.astype(np.float32)
     
-    return enhanced_frame
+    return np.clip(enhanced, 0, 255).astype(np.uint8)

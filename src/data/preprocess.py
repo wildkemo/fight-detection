@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import numpy as np
 from extract_frames import extract_frames
 from resize import resize
 from denoise import denoise_guided, median_blur
@@ -8,6 +9,8 @@ from dynamic_range import dynamic_range
 from contrast import contrast
 from sharpen import sharpen
 from color_space import color_space
+from log_transform import log_transform
+from inverse_log import inverse_log
 from sanity_check import sanity_check
 from storage import storage
 
@@ -20,8 +23,8 @@ PROJECT_ROOT = BASE_DIR.parent.parent
 DATASET_DIR = BASE_DIR / "dataset" 
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 BURST_SIZE = 16  # Group frames into sets of 16
-USE_SINGLE_VIDEO = False  # Set to True to process only one video
-SINGLE_VIDEO_PATH = str(DATASET_DIR / "Violence" / "V_515.mp4")  # Path used when USE_SINGLE_VIDEO is True
+USE_SINGLE_VIDEO = True  # Set to True to process only one video
+SINGLE_VIDEO_PATH = str(DATASET_DIR / "Violence" / "V_128.mp4")  # Path used when USE_SINGLE_VIDEO is True
 
 def process_video(video_path):
     """
@@ -59,6 +62,15 @@ def process_video(video_path):
 
         # Step 4: contrast stretching
         frame = dynamic_range(frame)
+
+        # Step 10 & 11: Adaptive Dynamic Range Adjustment
+        # If the image is dark (mean < 127), use Log to expand shadows.
+        # If the image is bright, use Inverse Log to expand highlights.
+        mean_brightness = np.mean(frame)
+        if mean_brightness < 127:
+            frame = log_transform(frame)
+        else:
+            frame = inverse_log(frame)
 
         # Step 5: Contrast Enhancement
         frame = contrast(frame)

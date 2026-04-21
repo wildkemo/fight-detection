@@ -3,21 +3,20 @@ import numpy as np
 
 def manual_histogram_equalization(img):
     """
-    Manual Global Histogram Equalization for Grayscale images.
+    Optimized Global Histogram Equalization using LUT.
     """
-    hist, bins = np.histogram(img.flatten(), 256, [0, 256])
+    # 1. Calculate the histogram
+    hist = cv2.calcHist([img], [0], None, [256], [0, 256])
+    
+    # 2. Calculate the Normalized CDF
     cdf = hist.cumsum()
-    cdf_m = np.ma.masked_equal(cdf, 0)
+    cdf_normalized = cdf * 255 / cdf[-1]
     
-    num = (cdf_m - cdf_m.min()) * 255
-    den = cdf_m.max() - cdf_m.min()
+    # 3. Create a Look-Up Table (LUT)
+    lut = np.round(cdf_normalized).astype('uint8')
     
-    if den == 0:
-        return img
-        
-    cdf_m = num / den
-    cdf_final = np.ma.filled(cdf_m, 0).astype('uint8')
-    return cdf_final[img]
+    # 4. Apply mapping using highly optimized OpenCV primitive
+    return cv2.LUT(img, lut)
 
 def contrast(frame):
     """
