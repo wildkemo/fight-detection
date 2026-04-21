@@ -1,9 +1,37 @@
-import cv2
+import numpy as np
 
-def denoise_frame(frame):
+
+def median_filter_gray(image, kernel_size=3):
+    pad = kernel_size // 2
+    h, w = image.shape
+
+    # Pad image
+    padded = np.pad(image, pad, mode='edge')
+
+    output = np.zeros_like(image)
+
+    for i in range(h):
+        for j in range(w):
+            window = padded[i:i+kernel_size, j:j+kernel_size]
+            output[i, j] = np.median(window)
+
+    return output
+
+
+def denoise_frame(frame, kernel_size=3):
     """
-    Step 3: Apply spatial filters to reduce sensor noise.
-    Using Bilateral Filter to strongly preserve edges while removing noise,
-    preventing the blurring caused by Median Blur.
+    Apply manual median filtering.
+    Works for both grayscale and color images.
     """
-    return cv2.bilateralFilter(frame, 5, 50, 50)
+
+    # Grayscale
+    if len(frame.shape) == 2:
+        return median_filter_gray(frame, kernel_size)
+
+    # Color image → apply per channel
+    output = np.zeros_like(frame)
+
+    for c in range(frame.shape[2]):
+        output[:, :, c] = median_filter_gray(frame[:, :, c], kernel_size)
+
+    return output

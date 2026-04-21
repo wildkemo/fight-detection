@@ -12,8 +12,12 @@ from sanity_check import sanity_check
 from storage import save_frame_organized
 
 # Configuration
-DATASET_DIR = "dataset/Violence"
-OUTPUT_ROOT = "output"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATASET_DIR = BASE_DIR / "dataset" 
+OUTPUT_ROOT = BASE_DIR / "output"
 BURST_SIZE = 16  # Group frames into sets of 16
 
 def process_video(video_path):
@@ -78,38 +82,43 @@ def run_pipeline():
     """
     Orchestrates the preprocessing pipeline across an entire directory.
     """
-    print("\n" + "═"*60)
+    print("\n" + "═" * 60)
     print(" 🎬 CCTV VIOLENCE DETECTION BATCH PREPROCESSING ".center(60))
-    print("═"*60)
+    print("═" * 60)
 
-    if not os.path.exists(DATASET_DIR):
+    if not DATASET_DIR.exists():
         print(f" ❌ Error: Dataset directory '{DATASET_DIR}' not found.")
-        print("═"*60 + "\n")
+        print("═" * 60 + "\n")
         return
 
-    video_files = glob.glob(os.path.join(DATASET_DIR, "*.mp4"))
-    
+    if not OUTPUT_ROOT.exists():
+        print(f" ❌ Error: Output directory '{OUTPUT_ROOT}' not found.")
+        print("   Create it first using the other file.")
+        print("═" * 60 + "\n")
+        return
+
+    video_files = glob.glob(str(DATASET_DIR / "*" / "*.mp4"))
+
     if not video_files:
         print(f" ⚠️  No .mp4 files found in '{DATASET_DIR}'.")
-        print("═"*60 + "\n")
+        print("═" * 60 + "\n")
         return
 
     print(f" 📁 Dataset Path: {DATASET_DIR}")
     print(f" 📁 Output Root : {OUTPUT_ROOT}")
     print(f" 📹 Videos Found: {len(video_files)}")
-    
+
     total_saved_frames = 0
-    
+
     for video_path in sorted(video_files):
         saved_frames = process_video(video_path)
         total_saved_frames += saved_frames
-            
-    print("\n" + "═"*60)
+
+    print("\n" + "═" * 60)
     print(" ✨ BATCH PREPROCESSING COMPLETE ".center(60))
     print(f" 📊 Total Videos Processed : {len(video_files)}")
     print(f" 📊 Total Frames Saved     : {total_saved_frames}")
-    print(f" 📦 Total Bursts Created   : {(total_saved_frames + BURST_SIZE - 1) // BURST_SIZE}")
-    print("═"*60 + "\n")
-
+    print("═" * 60 + "\n")
+    
 if __name__ == "__main__":
     run_pipeline()
