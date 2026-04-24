@@ -5,77 +5,33 @@ import cv2
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
 
 
-def extract_frames(
-    video_path: str | Path,
-    target_fps: float = 5.0,
-) -> list:
-    """
-    Extract frames from a single video and return them in memory as a list.
-
-    Notes:
-    - Does NOT save frames.
-    - Does NOT create any folders.
-    - Intended for preprocess.py, which applies processing then saves frames later.
-    """
-    video_path = Path(video_path)
-
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise ValueError(f"Could not open video: {video_path}")
-
-    original_fps = cap.get(cv2.CAP_PROP_FPS)
-    if original_fps is None or original_fps <= 0:
-        original_fps = target_fps
-
-    frame_interval = max(1, round(original_fps / target_fps))
-
-    frames = []
-    frame_index = 0
-
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-
-        if frame_index % frame_interval == 0:
-            frames.append(frame)
-
-        frame_index += 1
-
-    cap.release()
-    return frames
-
-
 def extract_frames_from_video(
     video_path: str | Path,
-    output_dir: str | Path,
+    output_root: str | Path,
     class_name: str,
     target_fps: float = 5.0,
     image_extension: str = ".jpg",
 ) -> dict:
     """
-    Extract frames from a single video at a fixed target FPS and save them.
+    Extract frames from one video and save them inside:
 
-    Notes:
-    - Assumes output_dir already exists.
-    - Does NOT create any folders.
-    - Saves all frames directly into one flat output folder.
+    output_root/class_name/video_name/frame_000000.jpg
+
+    Example:
+    output/frames/Violence/video_001/frame_000000.jpg
     """
+
     video_path = Path(video_path)
-    output_dir = Path(output_dir)
+    output_root = Path(output_root)
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    if not output_dir.exists():
-        raise FileNotFoundError(
-            f"Output directory does not exist: {output_dir}"
-        )
+    video_output_dir = output_root / class_name / video_path.stem
+    video_output_dir.mkdir(parents=True, exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))
+
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")
 
@@ -89,18 +45,17 @@ def extract_frames_from_video(
 
     frame_index = 0
     saved_index = 0
-    video_stem = video_path.stem
 
     while True:
         success, frame = cap.read()
+
         if not success:
             break
 
         if frame_index % frame_interval == 0:
-            frame_name = (
-                f"{class_name}_{video_stem}_frame_{saved_index:06d}{image_extension}"
-            )
-            frame_path = output_dir / frame_name
+            frame_name = f"frame_{saved_index:06d}{image_extension}"
+            frame_path = video_output_dir / frame_name
+
             cv2.imwrite(str(frame_path), frame)
             saved_index += 1
 
@@ -112,7 +67,8 @@ def extract_frames_from_video(
 
     return {
         "video_path": str(video_path),
-        "output_dir": str(output_dir),
+        "output_dir": str(video_output_dir),
+        "class_name": class_name,
         "original_fps": original_fps,
         "target_fps": target_fps,
         "frame_interval": frame_interval,
@@ -124,40 +80,49 @@ def extract_frames_from_video(
 
 def extract_frames_from_class_folder(
     input_class_dir: str | Path,
-    output_dir: str | Path,
+    output_root: str | Path,
     class_name: str,
     target_fps: float = 5.0,
 ) -> list[dict]:
     """
-    Extract frames from all supported video files inside one class folder.
+    Extract frames from all videos inside one class folder.
 
-    Notes:
-    - Reads videos from the class folder.
-    - Saves all frames directly into one shared output folder.
-    - Does NOT create any subfolders.
+    Example input:
+    dataset/Violence/
+
+    Example output:
+    output/frames/Violence/video_name/
     """
+
     input_class_dir = Path(input_class_dir)
-    output_dir = Path(output_dir)
+    output_root = Path(output_root)
 
     if not input_class_dir.exists():
-        raise FileNotFoundError(f"Input folder not found: {input_class_dir}")
-
-    if not output_dir.exists():
-        raise FileNotFoundError(
-            f"Output directory does not exist: {output_dir}"
-        )
+        raise FileNotFoundError(f"Input class folder not found: {input_class_dir}")
 
     results = []
 
-    for video_file in input_class_dir.iterdir():
-        if video_file.is_file() and video_file.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
-            metadata = extract_frames_from_video(
-                video_path=video_file,
-                output_dir=output_dir,
-                class_name=class_name,
-                target_fps=target_fps,
-            )
-            results.append(metadata)
+    video_files = [
+        file
+        for file in input_class_dir.iterdir()
+        if file.is_file() and file.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+    ]
+
+    if len(video_files) == 0:
+        print(f"Warning: No supported videos found in {input_class_dir}")
+        return results
+
+    for video_file in video_files:
+        print(f"Extracting: {video_file}")
+
+        metadata = extract_frames_from_video(
+            video_path=video_file,
+            output_root=output_root,
+            class_name=class_name,
+            target_fps=target_fps,
+        )
+
+        results.append(metadata)
 
     return results
 
@@ -165,47 +130,53 @@ def extract_frames_from_class_folder(
 def extract_frames_from_dataset(
     dataset_root: str | Path,
     output_root: str | Path,
-    class_names: list[str] | None = None,
+    class_names: list[str],
     target_fps: float = 5.0,
 ) -> list[dict]:
     """
-    Extract frames for all class folders inside the dataset root.
+    Extract frames from all class folders.
 
-    Notes:
-    - Assumes output_root already exists.
-    - Saves all frames into one flat output folder.
-    - Does NOT create class folders or video folders.
+    Expected input:
+    dataset/
+    ├── Violence/
+    └── NonViolence/
+
+    Expected output:
+    output/frames/
+    ├── Violence/
+    │   └── video_name/
+    └── NonViolence/
+        └── video_name/
     """
+
     dataset_root = Path(dataset_root)
     output_root = Path(output_root)
 
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset root not found: {dataset_root}")
 
-    if not output_root.exists():
-        raise FileNotFoundError(
-            f"Output directory does not exist: {output_root}"
-        )
-
-    if class_names is None:
-        class_names = [item.name for item in dataset_root.iterdir() if item.is_dir()]
+    output_root.mkdir(parents=True, exist_ok=True)
 
     all_results = []
 
     for class_name in class_names:
         class_dir = dataset_root / class_name
+
         if not class_dir.exists():
             print(f"Skipping missing class folder: {class_dir}")
             continue
 
-        print(f"\nProcessing class: {class_name}")
+        print("\n" + "=" * 60)
+        print(f"Processing class: {class_name}")
+        print("=" * 60)
 
         class_results = extract_frames_from_class_folder(
             input_class_dir=class_dir,
-            output_dir=output_root,
+            output_root=output_root,
             class_name=class_name,
             target_fps=target_fps,
         )
+
         all_results.extend(class_results)
 
     return all_results
@@ -213,8 +184,9 @@ def extract_frames_from_dataset(
 
 def print_summary(results: list[dict]) -> None:
     """
-    Print a clean summary of extraction results.
+    Print extraction summary.
     """
+
     total_videos = len(results)
     total_saved_frames = sum(item["saved_frames"] for item in results)
 
@@ -226,22 +198,26 @@ def print_summary(results: list[dict]) -> None:
     print("-" * 60)
 
     for item in results:
-        print(f"Video:         {item['video_path']}")
-        print(f"Original FPS:  {item['original_fps']:.2f}")
-        print(f"Target FPS:    {item['target_fps']:.2f}")
-        print(f"Saved Frames:  {item['saved_frames']}")
-        print(f"Output Folder: {item['output_dir']}")
+        print(f"Video:          {item['video_path']}")
+        print(f"Class:          {item['class_name']}")
+        print(f"Original FPS:   {item['original_fps']:.2f}")
+        print(f"Target FPS:     {item['target_fps']:.2f}")
+        print(f"Frame interval: {item['frame_interval']}")
+        print(f"Saved frames:   {item['saved_frames']}")
+        print(f"Output folder:  {item['output_dir']}")
         print("-" * 60)
 
 
 if __name__ == "__main__":
-    dataset_root = Path("src/data/dataset")
-    output_root = Path("src/data/output")
+    dataset_root = Path("dataset")
+    output_root = Path("output/frames")
+
+    class_names = ["NonViolence", "Violence"]
 
     results = extract_frames_from_dataset(
         dataset_root=dataset_root,
         output_root=output_root,
-        class_names=["Violence", "NonViolence"],
+        class_names=class_names,
         target_fps=5.0,
     )
 

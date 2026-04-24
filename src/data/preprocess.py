@@ -1,148 +1,104 @@
-import os
-import sys
-import glob
-import numpy as np
-from extract_frames import extract_frames
+from pathlib import Path
+import cv2
+
 from resize import resize
-from denoise import denoise_guided, median_blur
-from dynamic_range import dynamic_range
+from denoise import denoise_guided
 from contrast import contrast
 from sharpen import sharpen
 from color_space import color_space
-from log_transform import log_transform
-from inverse_log import inverse_log
-from sanity_check import sanity_check
-from storage import storage
 
-# Configuration
-from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent.parent
+# =========================
+# CONFIG
+# =========================
 
-DATASET_DIR = BASE_DIR / "dataset" 
-OUTPUT_ROOT = PROJECT_ROOT / "output"
-BURST_SIZE = 16  # Group frames into sets of 16
-USE_SINGLE_VIDEO = True  # Set to True to process only one video
-SINGLE_VIDEO_PATH = str(DATASET_DIR / "Violence" / "V_128.mp4")  # Path used when USE_SINGLE_VIDEO is True
+USE_DENOISE = False
+USE_CONTRAST = False
+USE_SHARPEN = False
+USE_GRAYSCALE = False
 
-def process_video(video_path):
-    """
-    Runs the enhancement pipeline on a single video.
-    Returns the number of frames saved.
-    """
-    print(f"\n 📂 Processing Video : {os.path.basename(video_path)}")
-    print("─"*60)
-    
-    # Step 1: Extract Frames
-    print(f" 🎞️  Step 1: Extracting frames...", end="", flush=True)
-    frames = extract_frames(video_path)
-    print(f" Done. ({len(frames)} frames)")
-    
-    if not frames:
-        print(" ⚠️  Warning: No frames extracted.")
-        return 0
+FRAME_SIZE = (112, 112)
 
-    print(f" 🪄  Steps 2-7: Applying image enhancement...")
-    
-    saved_count = 0
-    total_frames = len(frames)
-    
-    for i, frame in enumerate(frames):
-        # --- PHASE 1: CONVERSION TO GRAYSCALE ---
-        # Convert to grayscale immediately for maximum processing speed in all steps
+INPUT_ROOT = Path("output/frames")
+OUTPUT_ROOT = Path("output/processed_frames")
+
+
+# =========================
+# PROCESS SINGLE FRAME
+# =========================
+
+def process_frame(frame):
+    # Resize (ALWAYS)
+    frame = cv2.resize(frame, FRAME_SIZE)
+
+    if USE_GRAYSCALE:
         frame = color_space(frame)
 
-        # Step 2: Resize and Standardize (Skipped)
-        # frame = resize(frame)
+    if USE_DENOISE:
+        frame = denoise_guided(frame)
 
-        # Step 3: Denoising (Combined Median + Guided)
-        frame = median_blur(frame, kernel_size=3)
-        frame = denoise_guided(frame, r=1, eps=1e-2)
-
-        # Step 4: contrast stretching
-        frame = dynamic_range(frame)
-
-        # Step 10 & 11: Adaptive Dynamic Range Adjustment
-        # If the image is dark (mean < 127), use Log to expand shadows.
-        # If the image is bright, use Inverse Log to expand highlights.
-        mean_brightness = np.mean(frame)
-        if mean_brightness < 127:
-            frame = log_transform(frame)
-        else:
-            frame = inverse_log(frame)
-
-        # Step 5: Contrast Enhancement
+    if USE_CONTRAST:
         frame = contrast(frame)
-        
-        # Step 6: Sharpening 
+
+    if USE_SHARPEN:
         frame = sharpen(frame)
 
-        
+    return frame
 
-        # Step 8: Sanity Check
-        if sanity_check(frame):
-            # Step 9: Organized Storage
-            storage(frame, video_path, OUTPUT_ROOT, saved_count, BURST_SIZE)
-            saved_count += 1
-        
-        # Simple Progress Indicator
-        progress = (i + 1) / total_frames
-        bar_length = 30
-        filled = int(progress * bar_length)
-        bar = "█" * filled + "░" * (bar_length - filled)
-        sys.stdout.write(f"\r    [{bar}] {i+1}/{total_frames} frames processed")
-        sys.stdout.flush()
-        
-    print(f"\n    ✅ Saved {saved_count} frames.")
-    return saved_count
+
+# =========================
+# MAIN PIPELINE
+# =========================
 
 def run_pipeline():
-    """
-    Orchestrates the preprocessing pipeline across an entire directory.
-    """
-    print("\n" + "═" * 60)
-    print(" 🎬 CCTV VIOLENCE DETECTION BATCH PREPROCESSING ".center(60))
-    print("═" * 60)
-
-    if not DATASET_DIR.exists():
-        print(f" ❌ Error: Dataset directory '{DATASET_DIR}' not found.")
-        print("═" * 60 + "\n")
+    if not INPUT_ROOT.exists():
+        print(f"❌ Input folder not found: {INPUT_ROOT}")
         return
 
-    # Automatically create OUTPUT_ROOT if it doesn't exist
-    if not OUTPUT_ROOT.exists():
-        print(f" 📂 Creating output directory: {OUTPUT_ROOT}")
-        OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    # ✅ Create main output folder automatically
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    if USE_SINGLE_VIDEO:
-        video_files = [SINGLE_VIDEO_PATH]
-        print(f" ℹ️  Single video mode: {SINGLE_VIDEO_PATH}")
-    else:
-        video_files = glob.glob(str(DATASET_DIR / "*" / "*.mp4"))
-        if not video_files:
-            print(f" ⚠️  No .mp4 files found in '{DATASET_DIR}'.")
-            print("═" * 60 + "\n")
-            return
+    total_saved = 0
 
-        # Sort video files to process "Violence" first, then "NonViolence"
-        video_files.sort(key=lambda x: (0 if os.path.basename(os.path.dirname(x)) == "Violence" else 1, x))
+    for class_dir in INPUT_ROOT.iterdir():
+        if not class_dir.is_dir():
+            continue
 
-    print(f" 📁 Dataset Path: {DATASET_DIR}")
-    print(f" 📁 Output Root : {OUTPUT_ROOT}")
-    print(f" 📹 Videos Found: {len(video_files)}")
+        class_name = class_dir.name
 
-    total_saved_frames = 0
+        print(f"\nProcessing class: {class_name}")
 
-    for video_path in video_files:
-        saved_frames = process_video(video_path)
-        total_saved_frames += saved_frames
+        for video_dir in class_dir.iterdir():
+            if not video_dir.is_dir():
+                continue
 
-    print("\n" + "═" * 60)
-    print(" ✨ BATCH PREPROCESSING COMPLETE ".center(60))
-    print(f" 📊 Total Videos Processed : {len(video_files)}")
-    print(f" 📊 Total Frames Saved     : {total_saved_frames}")
-    print("═" * 60 + "\n")
-    
+            # ✅ Create video output folder automatically
+            output_video_dir = OUTPUT_ROOT / class_name / video_dir.name
+            output_video_dir.mkdir(parents=True, exist_ok=True)
+
+            frame_files = sorted(video_dir.glob("*.jpg"))
+
+            print(f"  → {video_dir.name}: {len(frame_files)} frames")
+
+            for i, frame_path in enumerate(frame_files):
+                frame = cv2.imread(str(frame_path))
+
+                if frame is None:
+                    continue
+
+                frame = process_frame(frame)
+
+                output_path = output_video_dir / f"frame_{i:06d}.jpg"
+                cv2.imwrite(str(output_path), frame)
+
+                total_saved += 1
+
+    print("\n" + "=" * 50)
+    print("✅ PREPROCESSING COMPLETE")
+    print(f"Total frames saved: {total_saved}")
+    print(f"Saved in: {OUTPUT_ROOT}")
+    print("=" * 50)
+
+
 if __name__ == "__main__":
     run_pipeline()
