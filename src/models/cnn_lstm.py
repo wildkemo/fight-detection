@@ -1,11 +1,6 @@
 """
-This file defines the model:
-
-Input: 16 frames
-CNN: extracts spatial features from each frame
-LSTM: learns temporal motion
-Sigmoid: outputs Violence / NonViolence
-
+CNN + LSTM for Video Classification
+Improved version: smaller, faster, less overfitting
 """
 
 from tensorflow.keras.models import Sequential
@@ -13,13 +8,15 @@ from tensorflow.keras.layers import (
     TimeDistributed,
     Conv2D,
     MaxPooling2D,
-    Flatten,
     Dense,
     Dropout,
     LSTM,
-    BatchNormalization
+    BatchNormalization,
+    GlobalAveragePooling2D,
+    Input
 )
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
 
 from src.utils.config import (
     SEQUENCE_LENGTH,
@@ -32,66 +29,48 @@ from src.utils.config import (
 
 
 def build_cnn_lstm_model():
-    """
-    CNN + LSTM model for binary video classification.
 
-    Input:
-        sequence of frames:
-        (SEQUENCE_LENGTH, FRAME_HEIGHT, FRAME_WIDTH, CHANNELS)
+    model = Sequential([
+        # ✅ Proper input layer (fix warning)
+        Input(shape=(SEQUENCE_LENGTH, FRAME_HEIGHT, FRAME_WIDTH, CHANNELS)),
 
-    Output:
-        probability between 0 and 1
-        0 -> NonViolence
-        1 -> Violence
-    """
+        # ===============================
+        # CNN FEATURE EXTRACTOR
+        # ===============================
 
-    model = Sequential()
+        TimeDistributed(Conv2D(32, (3,3), activation='relu', padding='same',
+                              kernel_regularizer=l2(0.001))),
+        TimeDistributed(BatchNormalization()),
+        TimeDistributed(MaxPooling2D((2, 2))),
 
-    # ===============================
-    # CNN FEATURE EXTRACTOR
-    # Applied to EACH frame separately
-    # ===============================
+        TimeDistributed(Conv2D(64, (3,3), activation='relu', padding='same',
+                              kernel_regularizer=l2(0.001))),
+        TimeDistributed(BatchNormalization()),
+        TimeDistributed(MaxPooling2D((2, 2))),
 
-    model.add(TimeDistributed(
-        Conv2D(32, (3, 3), activation="relu", padding="same"),
-        input_shape=(SEQUENCE_LENGTH, FRAME_HEIGHT, FRAME_WIDTH, CHANNELS)
-    ))
-    model.add(TimeDistributed(BatchNormalization()))
-    model.add(TimeDistributed(MaxPooling2D((2, 2))))
+        TimeDistributed(Conv2D(128, (3,3), activation='relu', padding='same',
+                              kernel_regularizer=l2(0.001))),
+        TimeDistributed(BatchNormalization()),
+        TimeDistributed(MaxPooling2D((2, 2))),
 
-    model.add(TimeDistributed(
-        Conv2D(64, (3, 3), activation="relu", padding="same")
-    ))
-    model.add(TimeDistributed(BatchNormalization()))
-    model.add(TimeDistributed(MaxPooling2D((2, 2))))
+        # ✅ KEY FIX: reduce features drastically
+        TimeDistributed(GlobalAveragePooling2D()),
 
-    model.add(TimeDistributed(
-        Conv2D(128, (3, 3), activation="relu", padding="same")
-    ))
-    model.add(TimeDistributed(BatchNormalization()))
-    model.add(TimeDistributed(MaxPooling2D((2, 2))))
+        # ===============================
+        # TEMPORAL MODELING
+        # ===============================
 
-    model.add(TimeDistributed(Flatten()))
+        LSTM(LSTM_UNITS, dropout=0.3, recurrent_dropout=0.3),
 
-    # ===============================
-    # TEMPORAL MODELING
-    # LSTM reads the sequence of frame features
-    # ===============================
+        # ===============================
+        # CLASSIFIER
+        # ===============================
 
-    model.add(LSTM(LSTM_UNITS, return_sequences=False))
+        Dense(64, activation="relu", kernel_regularizer=l2(0.001)),
+        Dropout(0.5),
 
-    # ===============================
-    # CLASSIFIER
-    # ===============================
-
-    model.add(Dense(64, activation="relu"))
-    model.add(Dropout(0.5))
-
-    model.add(Dense(1, activation="sigmoid"))
-
-    # ===============================
-    # COMPILE
-    # ===============================
+        Dense(1, activation="sigmoid")
+    ])
 
     model.compile(
         optimizer=Adam(learning_rate=LEARNING_RATE),
