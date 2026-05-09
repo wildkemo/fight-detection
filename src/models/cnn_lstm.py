@@ -11,6 +11,7 @@ or [0, 1]; frames are normalized with ``mobilenet_v3.preprocess_input``.
 
 from __future__ import annotations
 
+import keras
 import tensorflow as tf
 from tensorflow.keras import layers, Model
 from tensorflow.keras import metrics
@@ -27,7 +28,10 @@ from src.utils.config import (
 )
 
 
-@tf.keras.utils.register_keras_serializable(package="fight_detection")
+@keras.saving.register_keras_serializable(
+    package="fight_detection",
+    name="_preprocess_frames_mobilenet_v3",
+)
 def _preprocess_frames_mobilenet_v3(x: tf.Tensor) -> tf.Tensor:
     x = tf.cast(x, tf.float32)
     m = tf.reduce_max(x)

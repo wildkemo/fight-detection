@@ -1,91 +1,208 @@
-"""
-Its job:
+"""Evaluate the trained MobileNetV3 + LSTM clip classifier on the held-out test split."""
 
-load trained model
-test it on unseen videos
-calculate accuracy, precision, recall, F1
-show confusion matrix
+from __future__ import annotations
 
-"""
+import argparse
+from pathlib import Path
 
-import os
-import numpy as np
 import matplotlib.pyplot as plt
-
-from tensorflow.keras.models import load_model
+import numpy as np
+import tensorflow as tf
 from sklearn.metrics import (
     accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
-    confusion_matrix,
-    classification_report
 )
+
+from src.models import cnn_lstm as _cnn_lstm_entry  # noqa: F401 - registers Lambda fn for load_model
 
 from src.utils.config import (
-    MODELS_DIR,
-    REPORTS_DIR,
+    BATCH_SIZE,
     CLASS_NAMES,
-    PREDICTION_THRESHOLD
+    MODELS_DIR,
+    PREDICTION_THRESHOLD,
+    REPORTS_DIR,
 )
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-def evaluate():
-    model_path = os.path.join(MODELS_DIR, "cnn_lstm_best_model.keras")
-    test_data_path = os.path.join(REPORTS_DIR, "test_data.npz")
 
-    print("Loading model...")
-    model = load_model(model_path)
+def _resolve_under_project(path: str | Path) -> Path:
+    p = Path(path)
+    return p if p.is_absolute() else _PROJECT_ROOT / p
 
-    print("Loading test data...")
+
+def _load_classifier(model_path: Path) -> tf.keras.Model:
+    """Restore weights for ``cnn_lstm``; MobileNet Lambda preprocess is Keras-registered."""
+    try:
+        return tf.keras.models.load_model(str(model_path), safe_mode=False)
+    except TypeError:
+        return tf.keras.models.load_model(str(model_path))
+
+
+def evaluate(
+    *,
+    model_path: Path | None = None,
+    test_data_path: Path | None = None,
+    show_plot: bool = True,
+) -> None:
+    reports_dir = _resolve_under_project(REPORTS_DIR)
+    models_dir = _resolve_under_project(MODELS_DIR)
+
+    if model_path is None:
+        model_path = models_dir / "cnn_lstm_best_model.keras"
+    else:
+        model_path = _resolve_under_project(model_path)
+
+    if test_data_path is None:
+        test_data_path = reports_dir / "test_data.npz"
+    else:
+        test_data_path = _resolve_under_project(test_data_path)
+
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            f"Missing model weights: {model_path}\n"
+            "Train first with: python -m src.training.train"
+        )
+    if not test_data_path.is_file():
+        raise FileNotFoundError(
+            f"Missing test bundle: {test_data_path}\n"
+            "Training writes this after splitting (see src/training/train.py)."
+        )
+
+    print(f"Loading model: {model_path}")
+    model = _load_classifier(model_path)
+    model.summary()
+
+    print(f"Loading test data: {test_data_path}")
     data = np.load(test_data_path)
-
-    X_test = data["X_test"]
-    y_test = data["y_test"]
+    X_test = np.asarray(data["X_test"])
+    y_test = np.asarray(data["y_test"]).astype(int).reshape(-1)
 
     print("X_test shape:", X_test.shape)
     print("y_test shape:", y_test.shape)
 
-    print("\nMaking predictions...")
-    y_prob = model.predict(X_test)
+    print("\nTensorFlow metrics (compiled loss + metrics)...")
+    try:
+        metrics_dict = model.evaluate(
+            X_test,
+            y_test.astype(np.float32),
+            batch_size=BATCH_SIZE,
+            verbose=1,
+            return_dict=True,
+        )
+        for name, value in metrics_dict.items():
+            print(f"  {name}: {float(value):.6f}")
+    except TypeError:
+        ev = model.evaluate(
+            X_test, y_test.astype(np.float32), batch_size=BATCH_SIZE, verbose=1
+        )
+        print(f"  results: {ev}")
 
-    y_pred = (y_prob >= PREDICTION_THRESHOLD).astype(int).reshape(-1)
+    print("\nPredicting...")
+    y_prob = model.predict(X_test, batch_size=BATCH_SIZE, verbose=1)
+    y_prob = np.asarray(y_prob).reshape(-1)
+    y_pred = (y_prob >= PREDICTION_THRESHOLD).astype(int)
 
-    print("\nEvaluation Results:")
-    print("Accuracy:", accuracy_score(y_test, y_pred))
-    print("Precision:", precision_score(y_test, y_pred))
-    print("Recall:", recall_score(y_test, y_pred))
-    print("F1-score:", f1_score(y_test, y_pred))
+    print("\nScikit-learn (threshold = {:.2f}):".format(PREDICTION_THRESHOLD))
+    print("  Accuracy:  ", accuracy_score(y_test, y_pred))
+    print("  Precision: ", precision_score(y_test, y_pred, zero_division=0))
+    print("  Recall:    ", recall_score(y_test, y_pred, zero_division=0))
+    print("  F1-score:  ", f1_score(y_test, y_pred, zero_division=0))
 
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=CLASS_NAMES))
+    print("\nClassification report:")
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=CLASS_NAMES,
+            zero_division=0,
+        )
+    )
 
     cm = confusion_matrix(y_test, y_pred)
-
-    print("\nConfusion Matrix:")
+    print("\nConfusion matrix (rows=true, cols=pred):")
     print(cm)
 
-    plt.figure(figsize=(6, 5))
-    plt.imshow(cm)
-    plt.title("Confusion Matrix")
-    plt.xlabel("Predicted Label")
-    plt.ylabel("True Label")
-    plt.xticks([0, 1], CLASS_NAMES)
-    plt.yticks([0, 1], CLASS_NAMES)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+    ax.set_title("Confusion matrix — MobileNetV3 + LSTM (test set)")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    tick_marks = np.arange(len(CLASS_NAMES))
+    ax.set_xticks(tick_marks)
+    ax.set_yticks(tick_marks)
+    ax.set_xticklabels(CLASS_NAMES, rotation=45, ha="right")
+    ax.set_yticklabels(CLASS_NAMES)
+    ax.set_ylabel("True label")
+    ax.set_xlabel("Predicted label")
+    thresh = cm.max() / 2.0 if cm.size else 0.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j,
+                i,
+                format(cm[i, j], "d"),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > thresh else "black",
+            )
+    fig.tight_layout()
 
-    for i in range(len(CLASS_NAMES)):
-        for j in range(len(CLASS_NAMES)):
-            plt.text(j, i, cm[i, j], ha="center", va="center")
+    cm_path = reports_dir / "confusion_matrix.png"
+    fig.savefig(cm_path, dpi=150, bbox_inches="tight")
+    print(f"\nConfusion matrix saved to: {cm_path}")
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
-    plt.colorbar()
-    plt.tight_layout()
 
-    cm_path = os.path.join(REPORTS_DIR, "confusion_matrix.png")
-    plt.savefig(cm_path)
-    plt.show()
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Evaluate MobileNetV3 + LSTM on the saved train/test split.",
+    )
+    p.add_argument(
+        "--model",
+        choices=("best", "final"),
+        default="best",
+        help="Which checkpoint to load (default: best val_loss).",
+    )
+    p.add_argument(
+        "--model-path",
+        default=None,
+        help="Override path to a .keras file (wins over --model).",
+    )
+    p.add_argument(
+        "--test-data",
+        default=None,
+        help="Override path to test_data.npz.",
+    )
+    p.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Save confusion matrix PNG only (no GUI).",
+    )
+    return p.parse_args()
 
-    print(f"\nConfusion matrix saved at: {cm_path}")
+
+def main() -> None:
+    args = _parse_args()
+    if args.model_path:
+        mp: Path | None = Path(args.model_path)
+    else:
+        name = (
+            "cnn_lstm_best_model.keras"
+            if args.model == "best"
+            else "cnn_lstm_final_model.keras"
+        )
+        mp = _resolve_under_project(MODELS_DIR) / name
+
+    td = Path(args.test_data) if args.test_data else None
+    evaluate(model_path=mp, test_data_path=td, show_plot=not args.no_show)
 
 
 if __name__ == "__main__":
-    evaluate()
+    main()
