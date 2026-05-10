@@ -7,7 +7,8 @@ import sys
 import os
 
 class LiveFightDetector:
-    def __init__(self, model_path="models/fight_detection.tflite", window_size=16, threshold=0.65, fps_target=5):
+    def __init__(self, model_path="models/fight_detection.tflite", window_size=16, threshold=0.65, fps_target=5, 
+                 motion_threshold=1.0, pixel_diff_threshold=25):
         print(f"Loading TFLite model from {model_path}...")
         if not os.path.exists(model_path):
             print(f"Error: Model file not found: {model_path}")
@@ -24,6 +25,38 @@ class LiveFightDetector:
         self.threshold = threshold
         self.fps_target = fps_target
         self.prediction_buffer = deque(maxlen=window_size)
+        
+        # Motion Filter State
+        self.prev_gray = None
+        self.motion_threshold = motion_threshold  # % of pixels that must change
+        self.pixel_diff_threshold = pixel_diff_threshold # Threshold for pixel difference
+
+    def check_motion(self, frame):
+        """
+        Fast frame differencing to detect if significant motion is present.
+        Returns True if motion is detected, False otherwise.
+        """
+        # 1. Grayscale and Blur (Downscale for speed)
+        small_frame = cv2.resize(frame, (160, 120))
+        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return True # Assume motion on first frame to initialize
+
+        # 2. Compute Absolute Difference
+        frame_delta = cv2.absdiff(self.prev_gray, gray)
+        thresh = cv2.threshold(frame_delta, self.pixel_diff_threshold, 255, cv2.THRESH_BINARY)[1]
+        
+        # 3. Calculate % of pixels changed
+        changed_pixels = np.sum(thresh > 0)
+        total_pixels = thresh.shape[0] * thresh.shape[1]
+        motion_percent = (changed_pixels / total_pixels) * 100
+        
+        self.prev_gray = gray
+        
+        return motion_percent > self.motion_threshold
 
     def fast_preprocess(self, frame):
         """
@@ -75,7 +108,16 @@ class LiveFightDetector:
     def predict(self, frame):
         """
         Runs inference and applies sliding window aggregation.
+        Includes a motion-gating mechanism to reduce false positives on static scenes.
         """
+        # 1. Motion Gating
+        if not self.check_motion(frame):
+            # No significant motion, decay the confidence to 0
+            self.prediction_buffer.append(0.0)
+            avg_prob = np.mean(self.prediction_buffer)
+            return avg_prob >= self.threshold, avg_prob
+
+        # 2. Heavy CNN Inference
         input_data = self.fast_preprocess(frame)
         self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
         self.interpreter.invoke()
