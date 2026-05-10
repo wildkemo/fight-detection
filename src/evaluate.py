@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
 
-def evaluate_model(model_path="models/fight_detection_saved_model", test_dir="data_splits/test", batch_size=32):
+def evaluate_model(model_path="models/fight_detection.keras", test_dir="data_splits/test", batch_size=32):
     """
     Evaluates the trained model on the test set and prints detailed metrics.
     """

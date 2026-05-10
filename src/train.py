@@ -59,14 +59,14 @@ def train_model(data_dir="data_splits", batch_size=32, epochs_phase1=5, epochs_p
     
     # 4. Save and Export to TFLite
     print("\n--- Exporting Model ---")
-    model_save_path = "models/fight_detection_saved_model"
     os.makedirs("models", exist_ok=True)
     
-    # Use export() for SavedModel format in Keras 3
-    model.export(model_save_path)
+    # 1. Save as native Keras 3 format (for evaluation/reloading)
+    keras_model_path = "models/fight_detection.keras"
+    model.save(keras_model_path)
     
-    converter = tf.lite.TFLiteConverter.from_saved_model(model_save_path)
-    # Default optimization (Baseline)
+    # 2. Export to TFLite
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite_model = converter.convert()
     
@@ -74,7 +74,7 @@ def train_model(data_dir="data_splits", batch_size=32, epochs_phase1=5, epochs_p
     with open(tflite_path, "wb") as f:
         f.write(tflite_model)
         
-    print(f"SavedModel exported to {model_save_path}")
+    print(f"Keras model saved to {keras_model_path}")
     print(f"TFLite model saved to {tflite_path}")
 
 if __name__ == "__main__":
