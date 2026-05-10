@@ -1,225 +1,425 @@
-# Fight Detection System — Implementation Plan
+# Real-Time Fight Detection System — Implementation Plan
 
-## 1. Overall Architecture
+## 1. Dataset Split
 
-Pipeline:
+### Goal
 
-Video → Frame Sampling (5 FPS) → Preprocessing → EfficientNet-Lite → Sliding Window Aggregation → Fight/No-Fight Decision
+Split the dataset into:
 
-### Description
+- train
+- validation
+- test
 
-- The system processes sampled video frames individually using a lightweight CNN.
-- Temporal understanding is achieved using prediction aggregation over multiple frames instead of heavy video models.
-- This keeps inference fast enough for CPU-only systems.
+### Important
+
+Split by VIDEO, not by frames.
+
+Correct:
+
+```text
+video_001.mp4 → train
+video_002.mp4 → test
+```
+
+Wrong:
+
+```text
+same video's frames in both train and test
+```
+
+This prevents data leakage and fake accuracy.
 
 ---
 
-## 2. Dataset Preparation
+## 2. Frame Extraction
 
-### Description
+### Goal
 
-- Extract frames from videos at 5 FPS.
-- Split dataset by VIDEO before frame extraction to prevent data leakage.
-- Organize frames into:
-  - train/
-  - validation/
-  - test/
+Extract frames from videos at 5 FPS.
 
-### Example FFmpeg Command
+### FFmpeg Command
 
 ```bash
-ffmpeg -i input.mp4 -vf fps=5 output/frame_%04d.jpg
+ffmpeg -i input.mp4 -vf fps=5 frames/frame_%04d.jpg
+```
+
+### How it works
+
+- `-vf fps=5`
+  → extracts 5 frames every second
+- `frame_%04d.jpg`
+  → saves sequential frame images
+
+### Why 5 FPS?
+
+- reduces redundancy
+- lowers CPU cost
+- still preserves fight motion information
+
+---
+
+## 3. Person Detection
+
+### Goal
+
+Detect people inside each frame.
+
+### Recommended Model
+
+- YOLOv8n
+
+### Output
+
+Bounding boxes around detected persons.
+
+Example:
+
+```text
+Person 1 → x1,y1,x2,y2
+Person 2 → x1,y1,x2,y2
+```
+
+### Why this step matters
+
+- removes background noise
+- focuses only on human interaction
+- improves accuracy significantly
+
+---
+
+## 4. Pose Estimation
+
+### Goal
+
+Extract human body keypoints from detected persons.
+
+### Recommended Model
+
+- MoveNet Lightning
+
+### Output
+
+17 body keypoints:
+
+```text
+nose
+shoulders
+elbows
+wrists
+hips
+knees
+ankles
+...
+```
+
+Each keypoint contains:
+
+```text
+x coordinate
+y coordinate
+confidence score
+```
+
+### Why pose estimation helps
+
+The system learns:
+
+- punches
+- kicks
+- aggressive movement patterns
+
+instead of learning background appearance.
+
+---
+
+## 5. Build Temporal Sequences
+
+### Goal
+
+Create motion sequences from consecutive frames.
+
+### Recommended Window
+
+- 16 frames
+
+At:
+
+```text
+5 FPS
+```
+
+this gives:
+
+```text
+~3 seconds of motion context
+```
+
+### Example
+
+Instead of:
+
+```text
+1 image
+```
+
+you train on:
+
+```text
+16 consecutive pose frames
 ```
 
 ---
 
-## 4. Preprocessing
+## 6. Flatten Pose Features
 
-### Description
+### Original Shape
 
-Apply lightweight preprocessing only.
+```text
+(16, 17, 3)
+```
 
-### Recommended
+Meaning:
 
-- Resize
-- Normalization
-- Mild denoising
-- Optional CLAHE
+- 16 frames
+- 17 keypoints
+- x/y/confidence
 
-### Avoid
+### Flattened Shape
 
-- Heavy sharpening
-- Aggressive edge filters
-- Complex transformations
+```text
+(16, 51)
+```
 
-### Reason
+because:
 
-EfficientNet already learns strong visual features.
+```text
+17 × 3 = 51
+```
 
----
+### Why flatten?
 
-## 5. Model Choice
-
-### Model
-
-- EfficientNet-Lite0
-
-### Description
-
-- Lightweight and CPU-friendly
-- Better feature extraction than MobileNet in many cases
-- Good balance between speed and accuracy
+GRU layers expect sequential feature vectors.
 
 ---
 
-## 6. Input Resolution
+## 7. Train GRU Model
 
-### Resolution
+### Goal
 
-- 224×224
+Learn motion behavior over time.
 
-### Description
+### Recommended Architecture
 
-- Reduces CPU usage significantly
-- Maintains good visual detail for classification
-- Standard size for EfficientNet-Lite
+```python
+model = Sequential([
+    GRU(64, input_shape=(16, 51)),
+    Dense(32, activation='relu'),
+    Dropout(0.3),
+    Dense(1, activation='sigmoid')
+])
+```
 
----
+### How it works
 
-## 7. Training Strategy
+#### GRU Layer
 
-### Description
+Learns:
 
-Use transfer learning instead of training from scratch.
+- movement patterns
+- motion timing
+- aggressive sequences
 
-### Steps
+#### Dense Layer
 
-1. Load pretrained ImageNet weights
-2. Replace final classifier layer
-3. Train classifier head first
-4. Fine-tune full model with low learning rate
+Learns higher-level fight features.
 
-### Reason
+#### Sigmoid Output
 
-Pretrained models generalize much better on medium-sized datasets.
+Returns:
 
----
-
-## 8. Data Augmentation
-
-### Recommended Augmentations
-
-- Brightness variation
-- Slight blur
-- Noise
-- Compression artifacts
-- Small rotations
-
-### Avoid
-
-- Extreme crops
-- Heavy color modifications
-- Unrealistic augmentations
-
-### Reason
-
-Augmentations should simulate real CCTV conditions.
+```text
+0 → nonfight
+1 → fight
+```
 
 ---
 
-## 9. Loss Function
+## 8. Train on Sequences
 
-### Loss
+### Training Data Format
 
-- BCEWithLogitsLoss
+```text
+X = pose sequences
+Y = labels
+```
 
-### Description
+### Example Shapes
 
-- Suitable for binary classification
-- More numerically stable than sigmoid + BCE separately
+```text
+X shape:
+(12000, 16, 51)
 
----
+Y shape:
+(12000,)
+```
 
-## 10. Inference Logic
+### Explanation
 
-### Description
-
-- Each frame receives a fight probability score from the model.
-- Predictions are accumulated over time before making a final decision.
-
-### Example Output
-
-- 0.92 → fight
-- 0.15 → non-fight
-- 0.81 → fight
+- each sample = one motion sequence
+- label = fight or nonfight
 
 ---
 
-## 11. Sliding Window Aggregation
+## 9. Real-Time Inference (Laptop Camera)
 
-### Description
+### Goal
 
-- Store predictions from recent frames.
-- Compute average probability over a fixed window.
+Run live detection using laptop webcam.
 
-### Example
+### Pipeline
 
-- Last 16 frames
-- Average confidence used for final decision
+```text
+Laptop Camera
+      ↓
+Frame Sampling
+      ↓
+YOLOv8n
+      ↓
+MoveNet
+      ↓
+Sequence Buffer
+      ↓
+GRU Model
+      ↓
+Fight Detection
+```
+
+### OpenCV Webcam Example
+
+```python
+import cv2
+
+cap = cv2.VideoCapture(0)
+```
+
+### How it works
+
+- `0`
+  → default laptop webcam
+
+---
+
+### Read Frames
+
+```python
+ret, frame = cap.read()
+```
+
+### Frame Sampling
+
+Process only:
+
+```text
+5 FPS
+```
+
+instead of every frame.
+
+---
+
+### Sequence Buffer Logic
+
+Store:
+
+```text
+last 16 pose vectors
+```
+
+When buffer is full:
+
+- run GRU inference
+- output confidence score
+
+---
+
+## 10. Smart Temporal Decision Logic
+
+### Goal
+
+Reduce false positives.
+
+### Recommended Strategy
+
+Do NOT trigger on single prediction.
+
+Use:
+
+- confidence smoothing
+- consecutive detections
+
+### Example Rule
+
+```text
+8 of last 12 predictions > 0.8
+```
+
+before raising an alert.
+
+### Why this works
+
+Prevents:
+
+- random spikes
+- accidental aggressive poses
+- noisy predictions
+
+---
+
+## 12. Export to TensorFlow Lite
+
+### Goal
+
+Optimize deployment for weak devices.
+
+### Convert Model
+
+```python
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+tflite_model = converter.convert()
+```
+
+### Save File
+
+```python
+with open("fight_detector.tflite", "wb") as f:
+    f.write(tflite_model)
+```
+
+---
+
+## INT8 Quantization (Recommended)
+
+### Enable Optimization
+
+```python
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+```
 
 ### Benefits
 
-- Reduces noisy predictions
-- Stabilizes output
-- Mimics temporal understanding without expensive models
+- smaller model
+- faster CPU inference
+- lower RAM usage
 
----
+### Final Output
 
-## 12. Suggested Parameters
+```text
+fight_detector.tflite
+```
 
-### Recommended
+This is the optimized deployment model for:
 
-- FPS: 5
-- Window size: 16 frames
-- Threshold: 0.65
-
-### Description
-
-- 16 frames at 5 FPS ≈ 3 seconds of temporal context
-- Threshold can be tuned later using validation data
-
----
-
-## 14. Deployment Format
-
-### Recommended
-
-- TensorFlow Lite
-  OR
-- ONNX Runtime
-
-### Description
-
-- Optimized for lightweight inference
-- Suitable for Raspberry Pi and weak CPUs
-- Easier deployment than full PyTorch models
-
----
-
-## 15. Raspberry Pi Optimization
-
-### Recommended Optimizations
-
-- INT8 quantization
-- Multithreaded inference
-- Frame skipping when overloaded
-
-### Description
-
-These optimizations reduce:
-
-- CPU usage
-- Memory usage
-- Inference latency
-
-while maintaining acceptable accuracy.
+- weak PCs
+- Raspberry Pi
+- edge AI systems
