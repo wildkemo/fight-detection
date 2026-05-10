@@ -177,3 +177,5 @@ vision_output.mp4
 # OS specific
 .DS_Store
 Thumbs.db
+
+data_splits/
