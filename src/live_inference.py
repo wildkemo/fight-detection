@@ -7,7 +7,7 @@ import sys
 import os
 
 class LiveFightDetector:
-    def __init__(self, model_path="models/fight_detection.tflite", window_size=16, threshold=0.65, fps_target=5, 
+    def __init__(self, model_path="models/fight_detection.tflite", window_size=32, threshold=0.7, fps_target=5, 
                  motion_threshold=1.0, pixel_diff_threshold=25):
         print(f"Loading TFLite model from {model_path}...")
         if not os.path.exists(model_path):
@@ -82,20 +82,20 @@ class LiveFightDetector:
         y_off = (target_h - new_h) // 2
         canvas[y_off:y_off+new_h, x_off:x_off+new_w] = resized
         
-        # 2. Denoising (Built-in Gaussian)
-        denoised = cv2.GaussianBlur(canvas, (3, 3), 0)
+        # 2. Denoising (Built-in Gaussian) - DISABLED
+        # denoised = cv2.GaussianBlur(canvas, (3, 3), 0)
         
-        # 3. CLAHE (Built-in on Y channel of YCrCb to match training logic)
-        ycrcb = cv2.cvtColor(denoised, cv2.COLOR_BGR2YCrCb)
-        y, cr, cb = cv2.split(ycrcb)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        cl = clahe.apply(y)
-        ycrcb_img = cv2.merge((cl, cr, cb))
-        processed_bgr = cv2.cvtColor(ycrcb_img, cv2.COLOR_YCrCb2BGR)
+        # 3. CLAHE (Built-in on Y channel of YCrCb to match training logic) - DISABLED
+        # ycrcb = cv2.cvtColor(denoised, cv2.COLOR_BGR2YCrCb)
+        # y, cr, cb = cv2.split(ycrcb)
+        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        # cl = clahe.apply(y)
+        # ycrcb_img = cv2.merge((cl, cr, cb))
+        # processed_bgr = cv2.cvtColor(ycrcb_img, cv2.COLOR_YCrCb2BGR)
         
         # 4. Color Space Conversion (BGR to RGB)
         # The model was trained using image_dataset_from_directory which defaults to RGB
-        processed_rgb = cv2.cvtColor(processed_bgr, cv2.COLOR_BGR2RGB)
+        processed_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         
         # 5. Normalization: REMOVED manual /255.0
         # EfficientNetB0 has a built-in Rescaling(1/255) layer.
