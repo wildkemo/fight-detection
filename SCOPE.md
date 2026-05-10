@@ -37,18 +37,39 @@ This prevents data leakage and fake accuracy.
 
 Extract frames from videos at 5 FPS.
 
-### FFmpeg Command
+### Python Implementation (OpenCV)
 
-```bash
-ffmpeg -i input.mp4 -vf fps=5 frames/frame_%04d.jpg
+```python
+import cv2
+import os
+
+def extract_frames(video_path, output_dir, target_fps=5):
+    cap = cv2.VideoCapture(video_path)
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    hop = round(video_fps / target_fps)
+
+    count = 0
+    frame_id = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+
+        if count % hop == 0:
+            name = os.path.join(output_dir, f"frame_{frame_id:04d}.jpg")
+            cv2.imwrite(name, frame)
+            frame_id += 1
+        count += 1
+    cap.release()
 ```
 
 ### How it works
 
-- `-vf fps=5`
-  → extracts 5 frames every second
-- `frame_%04d.jpg`
-  → saves sequential frame images
+- `cv2.VideoCapture`
+  → opens the video file
+- `video_fps / target_fps`
+  → calculates the frame interval (hop) to achieve 5 FPS
+- `count % hop == 0`
+  → samples only the frames that match our target rate
 
 ### Why 5 FPS?
 
@@ -63,10 +84,11 @@ ffmpeg -i input.mp4 -vf fps=5 frames/frame_%04d.jpg
 ### Goal
 
 Detect people inside each frame.
+resize images to 640×640 (common default) with padding to preserve aspect ratio
 
 ### Recommended Model
 
-- YOLOv8n
+- YOLOv8n (use pretrained weights)
 
 ### Output
 
@@ -92,10 +114,11 @@ Person 2 → x1,y1,x2,y2
 ### Goal
 
 Extract human body keypoints from detected persons.
+resize Yolo's output images to 192×192 (Lightning version) with padding to preserve aspect ratio
 
 ### Recommended Model
 
-- MoveNet Lightning
+- MoveNet Lightning (use pretrained weights)
 
 ### Output
 
@@ -202,7 +225,7 @@ GRU layers expect sequential feature vectors.
 
 ---
 
-## 7. Train GRU Model
+## 7. Train GRU Model (DO NOT use pretrained weights)
 
 ### Goal
 
