@@ -7,17 +7,17 @@ Implement a robust, real-time violence detection system optimized for edge devic
 The project pivoted from a fragmented YOLO+MoveNet approach to a unified **YOLOv8-Pose** pipeline to resolve identity teleportation and "Frankenstein skeleton" issues.
 
 ### Stage 1: Preprocessing & Sampling
-- **Sampling:** 5 FPS (deterministic frame skipping).
+- **Sampling:** 10 FPS (deterministic frame skipping).
 - **Split:** Stratified by Video ID (80% Train, 10% Val, 10% Test).
 
 ### Stage 2: Unified Tracking & Pose Estimation
-- **Model:** YOLOv8n-Pose (Nano).
+- **Model:** YOLOv8s-Pose (Small).
 - **Tracking:** ByteTrack (Multi-object tracking).
 - **Feature Set:** 17 body keypoints [x, y, confidence] in global frame coordinates.
 
 ### Stage 3: Temporal Classification
 - **Architecture:** Bidirectional GRU (64 units) + Dense (32 units).
-- **Sequence Length:** 16 frames (~3 seconds).
+- **Sequence Length:** 32 frames (~3 seconds).
 - **Regularization:** L2 Kernel Regularization (0.01) + Dropout (0.5) + Recurrent Dropout (0.2).
 
 ### Stage 4: Real-Time Inference (Optimized)

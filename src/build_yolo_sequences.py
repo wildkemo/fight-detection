@@ -7,7 +7,7 @@ from tqdm import tqdm
 # Configuration
 INPUT_DIR = Path("output/yolo_poses")
 OUTPUT_DIR = Path("output/dataset")
-SEQUENCE_LENGTH = 16
+SEQUENCE_LENGTH = 32
 
 def main():
     print("Starting ID-based sequence building from YOLO-Pose data...")
@@ -46,8 +46,8 @@ def main():
                         # Sliding window
                         for i in range(0, len(all_kpts) - SEQUENCE_LENGTH + 1):
                             window = all_kpts[i : i + SEQUENCE_LENGTH]
-                            # window is (16, 17, 3)
-                            # Flatten: (16, 17, 3) -> (16, 51)
+                            # window is (32, 17, 3)
+                            # Flatten: (32, 17, 3) -> (32, 51)
                             flattened_window = np.array(window).reshape(SEQUENCE_LENGTH, 51)
                             X_split.append(flattened_window)
                             y_split.append(label)

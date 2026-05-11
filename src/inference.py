@@ -14,10 +14,10 @@ import threading
 from pathlib import Path
 
 # Configuration
-MODEL_YOLO = "yolov8n-pose.pt"
+MODEL_YOLO = "yolov8s-pose.pt"
 MODEL_GRU = "output/models/gru_model.keras"
-TARGET_FPS = 5
-SEQUENCE_LENGTH = 16
+TARGET_FPS = 10
+SEQUENCE_LENGTH = 32
 FIGHT_THRESHOLD = 0.5
 SMOOTHING_WINDOW = 5
 SMOOTHING_THRESHOLD = 3  # Trigger alert if 3/5 predictions are positive
@@ -112,7 +112,7 @@ def main():
     is_recording = False
     video_writer = None
     frames_since_fight = 0
-    RECORD_COOLDOWN_FRAMES = 15  # 3 seconds of cooldown at 5 FPS
+    RECORD_COOLDOWN_FRAMES = 30  # 3 seconds of cooldown at 10 FPS
 
     print(f"Inference started. Target FPS: {TARGET_FPS}")
 
@@ -159,8 +159,9 @@ def main():
             enhanced = clahe.apply(gray)
             proc_frame = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
-        # Step 1: YOLO-Pose Tracking (lower conf for night/grayscale sensitivity)
-        results = yolo.track(proc_frame, persist=True, tracker="bytetrack.yaml", verbose=False, conf=0.15)
+        # Step 1: YOLO-Pose Tracking (dynamic conf: strict for day, sensitive for night)
+        conf_thresh = 0.15 if args.night_mode else 0.30
+        results = yolo.track(proc_frame, persist=True, tracker="bytetrack.yaml", verbose=False, conf=conf_thresh)
         
         current_frame_ids = []
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -219,7 +220,7 @@ def main():
                 
                 if is_near_someone:
                     eligible_tids.append(tid)
-                    # Flatten sequence (16, 17, 3) -> (16, 51)
+                    # Flatten sequence (32, 17, 3) -> (32, 51)
                     seq = np.array(data["buffer"]).reshape(SEQUENCE_LENGTH, 51)
                     input_batch.append(seq)
                 else:

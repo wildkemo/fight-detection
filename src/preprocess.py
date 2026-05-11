@@ -7,7 +7,7 @@ from pathlib import Path
 # Configuration
 DATASET_DIR = Path("dataset")
 OUTPUT_DIR = Path("output/frames")
-TARGET_FPS = 5
+TARGET_FPS = 10
 SPLITS = {"train": 0.7, "val": 0.15, "test": 0.15}
 CLASSES = ["Violence", "NonViolence"]
 
