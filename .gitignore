@@ -172,6 +172,7 @@ checkpoints/
 *.pt
 *.onnx
 *.pb
+*.zip
 vision_output.mp4
 
 # OS specific

@@ -1,67 +1,50 @@
 # GEMINI.md - Fight Detection System
 
 ## Project Overview
-This project implements a real-time **Fight Detection System** designed for efficiency on CPU-only systems and edge devices. The system leverages **Pose Estimation** and **Temporal Modeling (GRU)** to identify aggressive movements (punches, kicks, etc.) while ignoring background noise. By focusing on human keypoints rather than raw pixel data, the model remains lightweight and robust to varying environments.
+This project implements a real-time **Fight Detection System** designed for efficiency on CPU-only systems and edge devices. The system leverages **YOLOv8-Pose** for simultaneous human detection and skeleton extraction, followed by a **Bidirectional GRU** for temporal classification.
 
 ### Main Technologies
-- **Language:** Python
-- **Pose Estimation:** MoveNet Lightning (via TensorFlow Hub)
-- **Object Detection:** YOLOv8n (for person localization)
-- **Sequence Modeling:** Gated Recurrent Units (GRU)
-- **Deployment:** TensorFlow Lite (INT8 Quantization)
-- **Utilities:** OpenCV, NumPy, TensorFlow Lite
+- **Language:** Python 3.13
+- **Pose Estimation & Tracking:** YOLOv8n-Pose (with ByteTrack)
+- **Temporal Modeling:** Bidirectional Gated Recurrent Units (GRU)
+- **Deployment:** TensorFlow 2.21
+- **Utilities:** OpenCV, NumPy, Scikit-learn
 
 ---
 
 ## Architecture Pipeline
-The system follows a sequential pipeline to process video data:
-1.  **Frame Sampling:** Videos are sampled at **5 FPS** to reduce redundancy and CPU load while preserving motion information.
-2.  **Person Detection:** YOLOv8n identifies and crops persons within the frame to focus the pose estimator.
-3.  **Pose Estimation:** MoveNet Lightning extracts 17 body keypoints (x, y, confidence) for each detected person.
-4.  **Temporal Sequencing:** Keypoints from **16 consecutive frames** (~3 seconds of context) are aggregated into a motion buffer.
-5.  **GRU Inference:** A GRU-based neural network classifies the sequence as "Fight" or "No-Fight".
-6.  **Decision Smoothing:** A temporal voting logic (e.g., 8/12 positive predictions) triggers an alert to minimize false positives.
+The system follows a high-performance sequential pipeline:
+1.  **Deterministic Frame Sampling:** Input streams are sampled at exactly **5 FPS** using frame skipping to ensure temporal consistency with training data.
+2.  **YOLOv8-Pose Extraction:** A single inference pass identifies multiple persons and their 17 body keypoints in global frame coordinates.
+3.  **ByteTrack Tracking:** Assigns persistent unique IDs to individuals, preventing "identity teleportation" and ensuring clean motion sequences.
+4.  **Interaction Gating:** To save CPU cycles, the GRU is only invoked for persons in close proximity to others or exhibiting high-acceleration motion.
+5.  **Bidirectional GRU Inference:** Classifies 16-frame motion buffers (~3 seconds) using a model that reads the sequence forward and backward for better context.
+6.  **Temporal Smoothing (3/5 Rule):** An alert is only triggered if 3 out of the last 5 sequences are flagged as violent, minimizing flickering and false positives.
 
 ---
 
 ## Building and Running
 
 ### Setup
-1.  **Environment:** The project uses a Python virtual environment in `.venv/`.
-2.  **Dependencies:** (TODO) Create `requirements.txt`. Essential libraries include:
-    - `ultralytics` (YOLOv8)
-    - `tensorflow` / `tensorflow-hub`
-    - `opencv-python`
-    - `numpy`
+1.  **Environment:** Ensure Python 3.13 is installed.
+2.  **Installation:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
 
 ### Execution
--   **TODO:** Implement `src/preprocess.py` for frame extraction and dataset splitting.
--   **TODO:** Implement `src/train.py` for the GRU model training.
--   **TODO:** Implement `src/inference.py` for real-time webcam detection.
--   **TODO:** Create an export script for TFLite conversion.
+1.  **Preprocessing:** `python src/preprocess.py` (Extracts frames at 5 FPS)
+2.  **Pose Extraction:** `python src/extract_yolo_poses.py` (Generates JSON tracks and MP4 visualizations)
+3.  **Sequence Building:** `python src/build_yolo_sequences.py` (Creates .npy datasets)
+4.  **Training:** `python src/train.py` (Trains the Bidirectional GRU)
+5.  **Inference:** `python src/inference.py --source <video_path_or_0>`
 
 ---
 
-## Development Conventions
-
-### Technical Constraints
--   **Sampling Rate:** Strictly 5 FPS for both training and inference.
--   **Sequence Length:** 16 frames (816-feature vector after flattening 17x3x16).
--   **Input Resolution:** YOLOv8/MoveNet handle resizing, but target resolution for detection is typically 640px (YOLO) and 192px (MoveNet).
-
-### Dataset Structure
--   Source videos are located in `dataset/Violence` and `dataset/NonViolence`.
--   **Crucial Rule:** Always split the dataset by **video ID**, never by frames, to prevent data leakage and inflated accuracy.
-
-### Optimization for Edge
--   Use **INT8 Quantization** during TFLite conversion.
--   Prefer MoveNet "Lightning" over "Thunder" for better performance on weak CPUs.
-
----
-
-## Key Files
--   `SCOPE.md`: Comprehensive implementation plan and architectural details (Primary Reference).
--   `PREPROCESSING.md`: Documentation for data preparation steps.
--   `src/`: Directory for source code (Pipeline implementation in progress).
--   `dataset/`: Raw video data (ignored by git).
--   `output/`: Generated frames and model checkpoints (ignored by git).
+## Technical Constraints
+-   **Sampling Rate:** Strictly 5 FPS (deterministic).
+-   **Sequence Length:** 16 frames.
+-   **Architecture:** Bidirectional GRU with L2 regularization and 0.5 Dropout.
+-   **Detection Threshold:** 0.3 (Recall-optimized).
