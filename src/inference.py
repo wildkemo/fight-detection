@@ -1,3 +1,8 @@
+import os
+# Suppress TensorFlow and CUDA logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
 import cv2
 import numpy as np
 import tensorflow as tf
@@ -5,6 +10,7 @@ from ultralytics import YOLO
 from collections import deque
 import argparse
 import time
+import threading
 from pathlib import Path
 
 # Configuration
@@ -12,15 +18,57 @@ MODEL_YOLO = "yolov8n-pose.pt"
 MODEL_GRU = "output/models/gru_model.keras"
 TARGET_FPS = 5
 SEQUENCE_LENGTH = 16
-FIGHT_THRESHOLD = 0.65
+FIGHT_THRESHOLD = 0.5
 SMOOTHING_WINDOW = 5
 SMOOTHING_THRESHOLD = 3  # Trigger alert if 3/5 predictions are positive
 INTERACTION_DISTANCE = 300  # Distance in pixels to gate GRU inference
 MAX_LOST_FRAMES = 10
+MAX_FRAME_AGE = 2.0  # Seconds to tolerate CCTV network jitter
+
+class ThreadedFrameGrabber:
+    """
+    Threaded background frame reader that continuously empties the camera 
+    buffer to prevent RTSP latency accumulation.
+    """
+    def __init__(self, source):
+        self.cap = cv2.VideoCapture(source)
+        # Attempt to disable double buffering to reduce RTSP latency
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        self.ret = False
+        self.latest_frame = None
+        self.timestamp = 0
+        self.lock = threading.Lock()
+        self.running = True
+        
+        # Start background thread
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                self.running = False
+                break
+            
+            # MUST copy frame to prevent OpenCV internal buffer reuse from corrupting sequences
+            with self.lock:
+                self.ret = ret
+                self.latest_frame = frame.copy()
+                self.timestamp = time.time()
+
+    def get_latest(self):
+        with self.lock:
+            return self.ret, self.latest_frame, self.timestamp
+
+    def release(self):
+        self.running = False
+        self.thread.join()
+        self.cap.release()
 
 def get_center(keypoints):
     """Calculates the center of a person based on their 17 keypoints."""
-    # Filter points with reasonable confidence
     valid_points = keypoints[keypoints[:, 2] > 0.1]
     if len(valid_points) == 0:
         return None
@@ -28,47 +76,91 @@ def get_center(keypoints):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=str, default="0", help="Webcam ID (0) or path to video file")
+    parser.add_argument("--source", type=str, default="0", help="Webcam ID (0) or RTSP/video path")
+    parser.add_argument("--night-mode", action="store_true", help="Enable contrast enhancement for night/grayscale video")
     args = parser.parse_args()
 
     print("Loading models...")
     yolo = YOLO(MODEL_YOLO)
     gru = tf.keras.models.load_model(MODEL_GRU)
     
-    # Track management
-    # { track_id: {"buffer": deque(maxlen=16), "history": deque(maxlen=5), "lost": 0, "last_pose": None} }
     tracks = {}
     
-    # Input Stream
+    # Input Stream via Background Thread
     source = args.source if args.source != "0" else 0
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
+    grabber = ThreadedFrameGrabber(source)
+    
+    if not grabber.cap.isOpened():
         print(f"Error: Could not open source {source}")
         return
 
-    # Deterministic FPS skipping
-    native_fps = cap.get(cv2.CAP_PROP_FPS)
-    if native_fps <= 0: native_fps = 30 # Fallback for some webcams
-    frame_skip = max(1, round(native_fps / TARGET_FPS))
-    print(f"Native FPS: {native_fps:.2f} | Target FPS: {TARGET_FPS} | Skip Interval: {frame_skip}")
-
-    # Setup Fullscreen Window
+    # Setup Fullscreen Window with Aspect Ratio preservation
     win_name = "Fight Detection System - Live"
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.setWindowProperty(win_name, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO)
     cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    frame_count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
+    # Fixed-Step Scheduler (Accumulator-based game loop style)
+    step_interval = 1.0 / TARGET_FPS
+    next_process_time = time.time()
+    
+    last_valid_frame = None
+    
+    # Recording setup
+    RECORD_OUTPUT_DIR = Path("output/detected_fights")
+    RECORD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    is_recording = False
+    video_writer = None
+    frames_since_fight = 0
+    RECORD_COOLDOWN_FRAMES = 15  # 3 seconds of cooldown at 5 FPS
 
-        frame_count += 1
-        if frame_count % frame_skip != 0:
+    print(f"Inference started. Target FPS: {TARGET_FPS}")
+
+    while grabber.running:
+        current_time = time.time()
+        
+        # Fixed-step accumulation to prevent temporal drift
+        if current_time < next_process_time:
+            # Yield CPU while waiting for the next logical 5-FPS tick
+            time.sleep(0.001)
             continue
+            
+        next_process_time += step_interval
 
-        # Step 1: YOLO-Pose Tracking
-        # persist=True keeps IDs across frames.
-        results = yolo.track(frame, persist=True, tracker="bytetrack.yaml", verbose=False)
+        # Pull latest frame + metadata
+        ret, frame, frame_ts = grabber.get_latest()
+        
+        # Frame Freshness Validation & Fallback
+        is_stale = False
+        if not ret or frame is None:
+            if last_valid_frame is not None:
+                frame = last_valid_frame
+                is_stale = True
+            else:
+                continue
+        else:
+            # Check age (Soft rejection threshold to handle CCTV jitter)
+            age = current_time - frame_ts
+            if age > MAX_FRAME_AGE:
+                # Severe network lag: Re-use last valid but mark as stale
+                if last_valid_frame is not None:
+                    frame = last_valid_frame
+                    is_stale = True
+                else:
+                    continue
+            else:
+                last_valid_frame = frame # Update fallback
+
+        # Optional Night Mode Enhancement (CLAHE)
+        proc_frame = frame
+        if args.night_mode:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
+            proc_frame = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+
+        # Step 1: YOLO-Pose Tracking (lower conf for night/grayscale sensitivity)
+        results = yolo.track(proc_frame, persist=True, tracker="bytetrack.yaml", verbose=False, conf=0.15)
         
         current_frame_ids = []
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -85,9 +177,12 @@ def main():
                         "buffer": deque(maxlen=SEQUENCE_LENGTH),
                         "history": deque(maxlen=SMOOTHING_WINDOW),
                         "lost": 0,
-                        "is_fight": False
+                        "is_fight": False,
+                        "last_prob": 0.0
                     }
                 
+                # Append to buffer. Stale frames are processed to maintain sequence continuity
+                # but don't represent fresh motion.
                 tracks[track_id]["buffer"].append(kpts)
                 tracks[track_id]["lost"] = 0
                 tracks[track_id]["last_pose"] = kpts
@@ -102,7 +197,6 @@ def main():
                     del tracks[tid]
 
         # Step 3: Interaction Gating & GRU Inference
-        # Batch GRU calls for all eligible tracks
         eligible_tids = []
         input_batch = []
         
@@ -132,11 +226,13 @@ def main():
                     # Not interacting? Clear history to prevent stale alerts
                     data["history"].append(0)
                     data["is_fight"] = False
+                    data["last_prob"] = 0.0
 
         if input_batch:
             preds = gru.predict(np.array(input_batch), verbose=0)
             for i, tid in enumerate(eligible_tids):
                 prob = preds[i][0]
+                tracks[tid]["last_prob"] = prob
                 # Step 4: Temporal Smoothing (3/5 Rule)
                 tracks[tid]["history"].append(1 if prob > FIGHT_THRESHOLD else 0)
                 tracks[tid]["is_fight"] = (sum(tracks[tid]["history"]) >= SMOOTHING_THRESHOLD)
@@ -154,9 +250,10 @@ def main():
             bg_color = (0, 0, 200) if is_fight else (0, 200, 0)
             text_color = (255, 255, 255)
             
-            # Label includes the temporal history score
+            # Label includes the temporal history score and probability percentage
             history_sum = sum(data["history"]) if "history" in data else 0
-            label = f"ID:{tid} FIGHT! ({history_sum}/5)" if is_fight else f"ID:{tid} OK ({history_sum}/5)"
+            prob_pct = data.get("last_prob", 0.0) * 100
+            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/5)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/5)"
             
             # Draw box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -174,26 +271,70 @@ def main():
             cv2.putText(annotated_frame, "!!! VIOLENCE DETECTED !!!", (50, 55), 
                         cv2.FONT_HERSHEY_DUPLEX, 1.5, (255, 255, 255), 3)
 
-        # System Overlay (Semi-transparent stats box at the bottom left)
+        # Recording Logic
+        if any_fight:
+            if not is_recording:
+                is_recording = True
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                out_path = RECORD_OUTPUT_DIR / f"fight_{timestamp}.mp4"
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                h, w = frame.shape[:2]
+                video_writer = cv2.VideoWriter(str(out_path), fourcc, TARGET_FPS, (w, h))
+                print(f"🚨 Started recording: {out_path}")
+            frames_since_fight = 0
+        else:
+            if is_recording:
+                frames_since_fight += 1
+                if frames_since_fight > RECORD_COOLDOWN_FRAMES:
+                    is_recording = False
+                    if video_writer:
+                        video_writer.release()
+                        video_writer = None
+                    print("🛑 Stopped recording.")
+
+        if is_recording and video_writer is not None:
+            # Draw recording indicator
+            cv2.circle(annotated_frame, (frame.shape[1] - 30, 40), 10, (0, 0, 255), -1)
+            cv2.putText(annotated_frame, "REC", (frame.shape[1] - 80, 45), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            video_writer.write(annotated_frame)
+
+        # System Overlay with Stream Freshness Stats
         overlay = annotated_frame.copy()
         h, w = frame.shape[:2]
-        cv2.rectangle(overlay, (10, h - 120), (370, h - 10), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (10, h - 145), (370, h - 10), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
         
-        cv2.putText(annotated_frame, "SYSTEM STATUS:", (20, h - 90), 
+        cv2.putText(annotated_frame, "SYSTEM STATUS:", (20, h - 115), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(annotated_frame, f"Active Tracks: {len(tracks)}", (20, h - 65), 
+        cv2.putText(annotated_frame, f"Active Tracks: {len(tracks)}", (20, h - 90), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(annotated_frame, f"GRU Calls (This Frame): {len(eligible_tids)}", (20, h - 40), 
+        cv2.putText(annotated_frame, f"GRU Calls: {len(eligible_tids)}", (20, h - 65), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(annotated_frame, f"Sampling: {TARGET_FPS} FPS", (20, h - 15), 
+        
+        status_color = (0, 0, 255) if is_stale else (0, 255, 0)
+        status_text = "DROPPING FRAMES / STALE" if is_stale else "STABLE (LIVE)"
+        cv2.putText(annotated_frame, f"Stream Status: {status_text}", (20, h - 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+        
+        # Night Mode Indicator
+        if args.night_mode:
+            cv2.putText(annotated_frame, "MODE: NIGHT (CLAHE ACTIVE)", (20, h - 140), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        
+        cv2.putText(annotated_frame, f"Logic Rate: {TARGET_FPS} FPS", (20, h - 15), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-        cv2.imshow(win_name, annotated_frame)
+        # Force 16:9 Aspect Ratio for non-square DVR streams (e.g. 1080N / 960x1080)
+        display_frame = cv2.resize(annotated_frame, (1280, 720))
+
+        cv2.imshow(win_name, display_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    if video_writer is not None:
+        video_writer.release()
+    grabber.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
