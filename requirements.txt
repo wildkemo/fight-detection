@@ -1,9 +1,12 @@
 # Python 3.13 & CUDA Compatible Requirements
 # Optimized for stability with CUDA 12.x / cuDNN 9.x
+# Pinned to exact verified versions
 
-opencv-python>=4.10.0.84
-numpy>=2.1.0
-tqdm>=4.67.0
-ultralytics>=8.3.95
-tensorflow[and-cuda]>=2.21.0
-tensorflow-hub>=0.16.1
+opencv-python==4.13.0.92
+numpy==2.4.4
+tqdm==4.67.3
+ultralytics==8.4.48
+ultralytics-thop==2.0.19
+scikit-learn==1.8.0
+tensorflow[and-cuda]==2.21.0
+tensorflow-hub==0.16.1
