@@ -16,13 +16,13 @@ from pathlib import Path
 # Configuration
 MODEL_YOLO = "yolov8s-pose.pt"
 MODEL_GRU = "output/models/gru_model.keras"
-TARGET_FPS = 10
-SEQUENCE_LENGTH = 32
+TARGET_FPS = 30
+SEQUENCE_LENGTH = 96
 FIGHT_THRESHOLD = 0.5
 SMOOTHING_WINDOW = 5
 SMOOTHING_THRESHOLD = 3  # Trigger alert if 3/5 predictions are positive
 INTERACTION_DISTANCE = 300  # Distance in pixels to gate GRU inference
-MAX_LOST_FRAMES = 10
+MAX_LOST_FRAMES = 30
 MAX_FRAME_AGE = 2.0  # Seconds to tolerate CCTV network jitter
 
 class ThreadedFrameGrabber:
@@ -220,7 +220,7 @@ def main():
                 
                 if is_near_someone:
                     eligible_tids.append(tid)
-                    # Flatten sequence (32, 17, 3) -> (32, 51)
+                    # Flatten sequence (96, 17, 3) -> (96, 51)
                     seq = np.array(data["buffer"]).reshape(SEQUENCE_LENGTH, 51)
                     input_batch.append(seq)
                 else:

@@ -46,8 +46,8 @@ def main():
                         # Sliding window
                         for i in range(0, len(all_kpts) - SEQUENCE_LENGTH + 1):
                             window = all_kpts[i : i + SEQUENCE_LENGTH]
-                            # window is (32, 17, 3)
-                            # Flatten: (32, 17, 3) -> (32, 51)
+                            # window is (96, 17, 3)
+                            # Flatten: (96, 17, 3) -> (96, 51)
                             flattened_window = np.array(window).reshape(SEQUENCE_LENGTH, 51)
                             X_split.append(flattened_window)
                             y_split.append(label)

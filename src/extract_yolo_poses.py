@@ -10,7 +10,7 @@ INPUT_DIR = Path("output/frames")
 POSE_OUTPUT_DIR = Path("output/yolo_poses")
 VIS_OUTPUT_DIR = Path("output/visualizations")
 MODEL_PATH = "yolov8s-pose.pt"
-FPS = 10
+FPS = 30
 
 def main():
     print("Loading YOLOv8n-Pose model...")
