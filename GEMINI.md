@@ -14,12 +14,12 @@ This project implements a real-time **Fight Detection System** designed for effi
 
 ## Architecture Pipeline
 The system follows a high-performance sequential pipeline:
-1.  **Deterministic Frame Sampling:** Input streams are sampled at exactly **30 FPS** using frame skipping to ensure temporal consistency with training data.
+1.  **Deterministic Frame Sampling:** Input streams are sampled at exactly **12 FPS** using frame skipping to ensure temporal consistency with training data.
 2.  **YOLOv8-Pose Extraction:** A single inference pass identifies multiple persons and their 17 body keypoints in global frame coordinates.
 3.  **ByteTrack Tracking:** Assigns persistent unique IDs to individuals, preventing "identity teleportation" and ensuring clean motion sequences.
 4.  **Interaction Gating:** To save CPU cycles, the GRU is only invoked for persons in close proximity to others or exhibiting high-acceleration motion.
-5.  **Bidirectional GRU Inference:** Classifies 96-frame motion buffers (~3 seconds) using a model that reads the sequence forward and backward for better context.
-6.  **Temporal Smoothing (9/15 Rule):** An alert is only triggered if 9 out of the last 15 sequences are flagged as violent, minimizing flickering and false positives.
+5.  **Bidirectional GRU Inference:** Classifies **36-frame** motion buffers (~3 seconds) using a model that reads the sequence forward and backward for better context.
+6.  **Temporal Smoothing (4/6 Rule):** An alert is only triggered if 4 out of the last 6 sequences are flagged as violent, minimizing flickering and false positives.
 
 ---
 
@@ -35,16 +35,16 @@ The system follows a high-performance sequential pipeline:
     ```
 
 ### Execution
-1.  **Preprocessing:** `python src/preprocess.py` (Extracts frames at 30 FPS)
-2.  **Pose Extraction:** `python src/extract_yolo_poses.py` (Generates JSON tracks and MP4 visualizations)
-3.  **Sequence Building:** `python src/build_yolo_sequences.py` (Creates .npy datasets)
-4.  **Training:** `python src/train.py` (Trains the Bidirectional GRU)
-5.  **Inference:** `python src/inference.py --source <video_path_or_0>`
+1.  **Preprocessing:** `python -m src.preprocess` (Extracts frames at 12 FPS)
+2.  **Pose Extraction:** `python -m src.extract_yolo_poses` (Generates JSON tracks and MP4 visualizations)
+3.  **Sequence Building:** `python -m src.build_yolo_sequences` (Creates .npy datasets)
+4.  **Training:** `python -m src.train` (Trains the Bidirectional GRU)
+5.  **Inference:** `python -m src.inference --source <video_path_or_0>`
 
 ---
 
 ## Technical Constraints
--   **Sampling Rate:** Strictly 30 FPS (deterministic).
--   **Sequence Length:** 96 frames.
+-   **Sampling Rate:** Strictly 12 FPS (deterministic).
+-   **Sequence Length:** 36 frames.
 -   **Architecture:** Bidirectional GRU with L2 regularization and 0.5 Dropout.
 -   **Detection Threshold:** 0.3 (Recall-optimized).

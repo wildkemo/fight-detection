@@ -8,7 +8,7 @@ def normalize_frame(image):
     # # Manual scalar multiplication using native numpy operations
     # return np.array(image, dtype=np.float32) * (1.0 / 255.0)
     
-    img_tf = tf.cast(image, dtype=tf.float32)
+    img_tf = tf.cast(image, dtype=tf.float64)
     return img_tf * (1.0 / 255.0)
 
 def denormalize_to_uint8(image):

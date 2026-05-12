@@ -11,7 +11,7 @@ from src.preprocessors.normalizer import normalize_frame, denormalize_to_uint8
 # Configuration
 DATASET_DIR = Path("dataset")
 OUTPUT_DIR = Path("output/frames")
-TARGET_FPS = 30
+TARGET_FPS = 12
 SPLITS = {"train": 0.7, "val": 0.15, "test": 0.15}
 CLASSES = ["Violence", "NonViolence"]
 
@@ -34,7 +34,7 @@ def split_videos(video_list, splits):
         "test": video_list[val_end:]
     }
 
-def extract_frames(video_path, output_path, target_fps=30, desc="Extracting"):
+def extract_frames(video_path, output_path, target_fps=12, desc="Extracting"):
     """Extracts frames from a video at a target FPS."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():

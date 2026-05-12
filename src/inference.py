@@ -115,7 +115,7 @@ def main():
     is_recording = False
     video_writer = None
     frames_since_fight = 0
-    RECORD_COOLDOWN_FRAMES = 90  # 3 seconds of cooldown at 30 FPS
+    RECORD_COOLDOWN_FRAMES = 36  # 3 seconds of cooldown at 12 FPS
 
     print(f"Inference started. Target FPS: {TARGET_FPS}")
 
@@ -223,7 +223,7 @@ def main():
                 
                 if is_near_someone:
                     eligible_tids.append(tid)
-                    # Flatten sequence (96, 17, 3) -> (96, 51)
+                    # Flatten sequence (36, 17, 3) -> (36, 51)
                     seq = np.array(data["buffer"]).reshape(SEQUENCE_LENGTH, 51)
                     input_batch.append(seq)
                 else:
@@ -237,7 +237,7 @@ def main():
             for i, tid in enumerate(eligible_tids):
                 prob = preds[i][0]
                 tracks[tid]["last_prob"] = prob
-                # Step 4: Temporal Smoothing (3/5 Rule)
+                # Step 4: Temporal Smoothing (4/6 Rule)
                 tracks[tid]["history"].append(1 if prob > FIGHT_THRESHOLD else 0)
                 tracks[tid]["is_fight"] = (sum(tracks[tid]["history"]) >= SMOOTHING_THRESHOLD)
 
@@ -257,7 +257,7 @@ def main():
             # Label includes the temporal history score and probability percentage
             history_sum = sum(data["history"]) if "history" in data else 0
             prob_pct = data.get("last_prob", 0.0) * 100
-            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/15)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/15)"
+            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/6)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/6)"
             
             # Draw box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -338,3 +338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+)

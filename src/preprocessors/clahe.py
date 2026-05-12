@@ -96,7 +96,7 @@ def apply_clahe(image, clip_limit=2.0, grid_size=(8, 8)):
     y_padded = np.pad(y_np, ((0, pad_h), (0, pad_w)), mode='reflect')
     
     # Step 2: Compute mappings for each tile (Keep in NumPy for histogram complexity)
-    mappings = np.zeros((gh, gw, 256), dtype=np.float32)
+    mappings = np.zeros((gh, gw, 256), dtype=np.float64)
     actual_clip_limit = max(1.0, clip_limit * (tile_h * tile_w) / 256.0)
     
     for i in range(gh):
