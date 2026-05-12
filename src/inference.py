@@ -12,6 +12,9 @@ import argparse
 import time
 import threading
 from pathlib import Path
+from src.preprocessors.denoiser import denoise_frame
+from src.preprocessors.clahe import apply_clahe
+from src.preprocessors.normalizer import normalize_frame, denormalize_to_uint8
 
 # Configuration
 MODEL_YOLO = "yolov8s-pose.pt"
@@ -19,8 +22,8 @@ MODEL_GRU = "output/models/gru_model.keras"
 TARGET_FPS = 30
 SEQUENCE_LENGTH = 96
 FIGHT_THRESHOLD = 0.5
-SMOOTHING_WINDOW = 5
-SMOOTHING_THRESHOLD = 3  # Trigger alert if 3/5 predictions are positive
+SMOOTHING_WINDOW = 15
+SMOOTHING_THRESHOLD = 9  # Trigger alert if 9/15 predictions are positive
 INTERACTION_DISTANCE = 300  # Distance in pixels to gate GRU inference
 MAX_LOST_FRAMES = 30
 MAX_FRAME_AGE = 2.0  # Seconds to tolerate CCTV network jitter
@@ -112,7 +115,7 @@ def main():
     is_recording = False
     video_writer = None
     frames_since_fight = 0
-    RECORD_COOLDOWN_FRAMES = 30  # 3 seconds of cooldown at 10 FPS
+    RECORD_COOLDOWN_FRAMES = 90  # 3 seconds of cooldown at 30 FPS
 
     print(f"Inference started. Target FPS: {TARGET_FPS}")
 
@@ -121,7 +124,7 @@ def main():
         
         # Fixed-step accumulation to prevent temporal drift
         if current_time < next_process_time:
-            # Yield CPU while waiting for the next logical 5-FPS tick
+            # Yield CPU while waiting for the next logical frame tick
             time.sleep(0.001)
             continue
             
@@ -151,16 +154,16 @@ def main():
             else:
                 last_valid_frame = frame # Update fallback
 
-        # Optional Night Mode Enhancement (CLAHE)
-        proc_frame = frame
-        if args.night_mode:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            enhanced = clahe.apply(gray)
-            proc_frame = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+        # 3-Step Preprocessing Pipeline (Align with Training)
+        # 1. Denoise -> 2. CLAHE -> 3. Normalize/Denormalize (Clipping)
+        proc_frame = denoise_frame(frame)
+        proc_frame = apply_clahe(proc_frame)
+        proc_frame = normalize_frame(proc_frame)
+        proc_frame = denormalize_to_uint8(proc_frame)
 
-        # Step 1: YOLO-Pose Tracking (dynamic conf: strict for day, sensitive for night)
-        conf_thresh = 0.15 if args.night_mode else 0.30
+        # Step 1: YOLO-Pose Tracking
+        # Use slightly lower confidence threshold for live tracking stability
+        conf_thresh = 0.25 
         results = yolo.track(proc_frame, persist=True, tracker="bytetrack.yaml", verbose=False, conf=conf_thresh)
         
         current_frame_ids = []
@@ -254,7 +257,7 @@ def main():
             # Label includes the temporal history score and probability percentage
             history_sum = sum(data["history"]) if "history" in data else 0
             prob_pct = data.get("last_prob", 0.0) * 100
-            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/5)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/5)"
+            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/15)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/15)"
             
             # Draw box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -317,11 +320,6 @@ def main():
         status_text = "DROPPING FRAMES / STALE" if is_stale else "STABLE (LIVE)"
         cv2.putText(annotated_frame, f"Stream Status: {status_text}", (20, h - 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
-        
-        # Night Mode Indicator
-        if args.night_mode:
-            cv2.putText(annotated_frame, "MODE: NIGHT (CLAHE ACTIVE)", (20, h - 140), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
         cv2.putText(annotated_frame, f"Logic Rate: {TARGET_FPS} FPS", (20, h - 15), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)

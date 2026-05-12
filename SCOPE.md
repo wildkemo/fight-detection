@@ -23,7 +23,7 @@ The project pivoted from a fragmented YOLO+MoveNet approach to a unified **YOLOv
 ### Stage 4: Real-Time Inference (Optimized)
 - **FPS Control:** Deterministic Nth-frame sampling.
 - **Interaction Gating:** GRU inference is only triggered if two people are within 300px (Interaction Distance).
-- **Temporal Smoothing:** 3-out-of-5 sliding window voting logic to trigger "FIGHT!" alerts.
+- **Temporal Smoothing:** 9-out-of-15 sliding window voting logic to trigger "FIGHT!" alerts.
 
 ## 3. Performance Summary
 - **Recall (Violence):** 94.1%

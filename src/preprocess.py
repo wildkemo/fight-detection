@@ -3,6 +3,9 @@ import os
 import random
 import shutil
 from pathlib import Path
+from src.preprocessors.denoiser import denoise_frame
+from src.preprocessors.clahe import apply_clahe
+from src.preprocessors.normalizer import normalize_frame, denormalize_to_uint8
 
 # Configuration
 DATASET_DIR = Path("dataset")
@@ -30,7 +33,7 @@ def split_videos(video_list, splits):
         "test": video_list[val_end:]
     }
 
-def extract_frames(video_path, output_path, target_fps=5):
+def extract_frames(video_path, output_path, target_fps=30):
     """Extracts frames from a video at a target FPS."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -56,7 +59,19 @@ def extract_frames(video_path, output_path, target_fps=5):
         
         if count % hop == 0:
             frame_filename = output_path / f"frame_{frame_id:04d}.jpg"
-            cv2.imwrite(str(frame_filename), frame)
+            
+            # Step 1: Denoise
+            processed_frame = denoise_frame(frame)
+            
+            # Step 2: Enhance Contrast (CLAHE)
+            processed_frame = apply_clahe(processed_frame)
+            
+            # Step 3: Normalize and Denormalize (for uint8 jpg saving)
+            processed_frame = normalize_frame(processed_frame)
+            processed_frame = denormalize_to_uint8(processed_frame)
+            
+            # Save the processed frame
+            cv2.imwrite(str(frame_filename), processed_frame)
             frame_id += 1
         count += 1
     

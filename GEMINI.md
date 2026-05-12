@@ -19,7 +19,7 @@ The system follows a high-performance sequential pipeline:
 3.  **ByteTrack Tracking:** Assigns persistent unique IDs to individuals, preventing "identity teleportation" and ensuring clean motion sequences.
 4.  **Interaction Gating:** To save CPU cycles, the GRU is only invoked for persons in close proximity to others or exhibiting high-acceleration motion.
 5.  **Bidirectional GRU Inference:** Classifies 96-frame motion buffers (~3 seconds) using a model that reads the sequence forward and backward for better context.
-6.  **Temporal Smoothing (3/5 Rule):** An alert is only triggered if 3 out of the last 5 sequences are flagged as violent, minimizing flickering and false positives.
+6.  **Temporal Smoothing (9/15 Rule):** An alert is only triggered if 9 out of the last 15 sequences are flagged as violent, minimizing flickering and false positives.
 
 ---
 
