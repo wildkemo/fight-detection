@@ -163,6 +163,7 @@ dataset.zip
 src/data/dataset/
 src/data/output/
 output/
+output2/
 processed_data/
 tmp/
 logs/
