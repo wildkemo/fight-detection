@@ -13,8 +13,8 @@ from pathlib import Path
 from queue import Queue
 
 # Configuration
-MODEL_YOLO = "yolov8s-pose.pt"
-MODEL_TCN = "output/models/tcn_model.keras"
+MODEL_YOLO = "yolov8n-pose.pt"
+MODEL_TCN = "output/models/tcn_model_quant.tflite"
 TARGET_FPS = 12
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 SEQUENCE_LENGTH = 36
@@ -23,12 +23,20 @@ SMOOTHING_WINDOW = 8
 SMOOTHING_THRESHOLD = 6
 INTERACTION_DISTANCE = 150
 MAX_LOST_FRAMES = 36
-PROCESSING_WIDTH = 854   # Resize to this width for YOLO (keeps aspect ratio)
-PROCESSING_HEIGHT = 480  # Or use 640x480 for 4:3, 854x480 for 16:9
+PROCESSING_WIDTH = 640   # Resize to this width for YOLO (keeps aspect ratio)
+PROCESSING_HEIGHT = 360  # Optimized 16:9 resolution
 
 class AsyncTCNPredictor:
     def __init__(self, model_path):
-        self.model = tf.keras.models.load_model(model_path)
+        self.interpreter = tf.lite.Interpreter(model_path=model_path)
+        self.interpreter.allocate_tensors()
+        self.input_details = self.interpreter.get_input_details()
+        self.output_details = self.interpreter.get_output_details()
+        
+        # Get quantization parameters
+        self.in_scale, self.in_zero_point = self.input_details[0]['quantization']
+        self.out_scale, self.out_zero_point = self.output_details[0]['quantization']
+        
         self.input_queue = Queue(maxsize=5)
         self.output_store = {}
         self.lock = threading.Lock()
@@ -44,10 +52,24 @@ class AsyncTCNPredictor:
                     break
                 batch_id, input_batch = item
                 if len(input_batch) > 0:
-                    preds = self.model.predict(input_batch, verbose=0)
+                    results = []
+                    for seq in input_batch:
+                        # Quantize: float32 -> int8
+                        q_input = (seq / self.in_scale + self.in_zero_point).astype(np.int8)
+                        q_input = np.expand_dims(q_input, axis=0)
+                        
+                        self.interpreter.set_tensor(self.input_details[0]['index'], q_input)
+                        self.interpreter.invoke()
+                        
+                        # Dequantize: int8 -> float32
+                        q_output = self.interpreter.get_tensor(self.output_details[0]['index'])
+                        prob = (q_output.astype(np.float32) - self.out_zero_point) * self.out_scale
+                        results.append(prob[0])
+                    
                     with self.lock:
-                        self.output_store[batch_id] = preds
-            except:
+                        self.output_store[batch_id] = np.array(results)
+            except Exception as e:
+                # print(f"Predict loop error: {e}")
                 continue
     
     def predict_async(self, batch_id, input_batch):
@@ -115,10 +137,9 @@ def fast_preprocess(frame):
     return frame
 
 def night_preprocess(frame):
-    """Heavier preprocessing for low light - use sparingly"""
-    # Light denoise
-    if len(frame.shape) == 3:
-        frame = cv2.fastNlMeansDenoisingColored(frame, None, 5, 5, 7, 21)
+    """Faster preprocessing for low light"""
+    # Fast bilateral filter for edge-preserving smoothing
+    frame = cv2.bilateralFilter(frame, 5, 50, 50)
     # CLAHE on L channel in LAB
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -132,8 +153,8 @@ def main():
     parser.add_argument("--source", type=str, default="0")
     parser.add_argument("--night-mode", action="store_true", 
                        help="Enable heavy preprocessing (reduces FPS)")
-    parser.add_argument("--resolution", type=str, default="854x480",
-                       help="Processing resolution WxH (e.g., 640x480, 854x480)")
+    parser.add_argument("--resolution", type=str, default="640x360",
+                       help="Processing resolution WxH (e.g., 640x360, 854x480)")
     args = parser.parse_args()
 
     # Parse resolution
@@ -142,7 +163,7 @@ def main():
         global PROCESSING_WIDTH, PROCESSING_HEIGHT
         PROCESSING_WIDTH, PROCESSING_HEIGHT = res_w, res_h
     except:
-        print(f"Invalid resolution {args.resolution}, using 854x480")
+        print(f"Invalid resolution {args.resolution}, using 640x360")
     
     print(f"Processing at {PROCESSING_WIDTH}x{PROCESSING_HEIGHT}")
 
@@ -340,8 +361,8 @@ def main():
                 tcn.predict_async(batch_id, np.array(batch_input))
                 pending_tcn[batch_id] = eligible_batch
         
-        # Visualization on original frame (not resized)
-        display = frame.copy()
+        # Visualization on original frame (already a copy from grabber)
+        display = frame
         
         # Calculate how many active tracks are fighting (mutual combat requirement)
         fighting_tracks = [track_id for track_id, data in track_items if data["is_fight"] and data["bbox"] is not None and data["lost_frames"] <= 2]
