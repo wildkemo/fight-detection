@@ -20,6 +20,20 @@ METRICS_PATH = EVAL_DIR / "tcn_metrics.json"
 def main():
     print("\n" + "="*60)
     print("!!! FIGHT DETECTION SYSTEM - TCN MODEL TRAINING !!!")
+    
+    # --- GPU CONFIGURATION ---
+    # Explicitly check for GPU and enable memory growth to prevent VRAM hoarding
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        print(f"[+] TensorFlow GPU DETECTED: {len(gpus)} GPU(s) found.")
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                print(f"    - Enabled VRAM memory growth for: {gpu.name}")
+            except RuntimeError as e:
+                print(f"    - Error setting memory growth: {e}")
+    else:
+        print("[!] WARNING: TensorFlow did NOT detect a GPU. Training will run on slow CPU.")
     print("="*60 + "\n")
 
     print("Loading datasets (YOLO-Pose versions)...")
@@ -46,6 +60,23 @@ def main():
     # Extreme focus on Recall (Zero Misses Goal)
     class_weights[1] = class_weights[1] * 3.0
     print(f"[*] Adjusted Class weights for high recall: {class_weights}")
+
+    # Step 1.5: Build Optimized tf.data Pipeline
+    BATCH_SIZE = 1024
+    print(f"[*] Building high-performance data pipeline (Batch Size: {BATCH_SIZE})...")
+    
+    def create_dataset(X, y, is_training=False):
+        ds = tf.data.Dataset.from_tensor_slices((X, y))
+        if is_training:
+            ds = ds.shuffle(buffer_size=len(X))
+        ds = ds.cache() # Keep data in VRAM/RAM after first epoch
+        ds = ds.batch(BATCH_SIZE)
+        ds = ds.prefetch(tf.data.AUTOTUNE) # Prepare next batch while GPU trains
+        return ds
+
+    train_ds = create_dataset(X_train, y_train, is_training=True)
+    val_ds = create_dataset(X_val, y_val)
+    test_ds = create_dataset(X_test, y_test)
 
     # Step 2: Build Model (TCN / 1D-CNN Architecture)
     # This architecture is superior for coordinate-based motion analysis
@@ -83,10 +114,9 @@ def main():
     print("\nStarting training...")
     epochs = 100 
     history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
+        train_ds,
+        validation_data=val_ds,
         epochs=epochs,
-        batch_size=32,
         class_weight=class_weights,
         callbacks=callbacks
     )
@@ -98,7 +128,7 @@ def main():
 
     # Step 6: TCN-Only Evaluation
     print("Evaluating model on test set...")
-    y_pred_prob = model.predict(X_test)
+    y_pred_prob = model.predict(test_ds)
     # Low threshold for high recall goal
     y_pred = (y_pred_prob > 0.3).astype(int)
 
