@@ -1,6 +1,7 @@
 import cv2
 import json
 import numpy as np
+import torch
 from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
@@ -13,6 +14,20 @@ MODEL_PATH = "yolov8s-pose.pt"
 FPS = 12
 
 def main():
+    print("\n" + "="*60)
+    print("!!! HARDWARE ACCELERATION STATUS !!!")
+    if torch.cuda.is_available():
+        device = 0
+        device_name = torch.cuda.get_device_name(0)
+        print(f"[+] CUDA GPU DETECTED: {device_name}")
+        print("[+] STATUS: Utilizing GPU for Pose Extraction")
+    else:
+        device = "cpu"
+        print("[!] WARNING: CUDA NOT DETECTED")
+        print("[!] STATUS: Falling back to slow CPU processing")
+        print("[!] Check your CUDA drivers and 'torch' installation.")
+    print("="*60 + "\n")
+
     print("Loading YOLOv8n-Pose model...")
     model = YOLO(MODEL_PATH)
     
@@ -53,7 +68,7 @@ def main():
             
             # Run tracking inference
             # persist=True keeps IDs across frames. verbose=False hides per-frame logs.
-            results = model.track(img, persist=True, tracker="bytetrack.yaml", verbose=False, device=0)
+            results = model.track(img, persist=True, tracker="bytetrack.yaml", verbose=False, device=device)
             
             if results[0].boxes is not None and results[0].boxes.id is not None:
                 track_ids = results[0].boxes.id.int().cpu().tolist()
