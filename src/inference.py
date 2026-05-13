@@ -222,6 +222,9 @@ def main():
     video_writer = None
     cooldown_counter = 0
     
+    # Pre-recording buffer (5 seconds)
+    recording_buffer = deque(maxlen=TARGET_FPS * 5)
+    
     print(f"System running at {TARGET_FPS} FPS (target)")
     print("Press 'q' to quit\n")
     
@@ -440,6 +443,9 @@ def main():
             bar_w = int(display.shape[1] * progress)
             cv2.rectangle(display, (0, 0), (bar_w, 10), (0, 165, 255), -1)
         
+        # Buffer the frame for pre-recording (before status overlay)
+        recording_buffer.append(display.copy())
+        
         # Recording
         if any_fight:
             if not is_recording:
@@ -450,6 +456,11 @@ def main():
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 video_writer = cv2.VideoWriter(str(out_path), fourcc, TARGET_FPS, (w, h))
                 print(f"[REC] Started: {out_path.name}")
+                
+                # Write pre-buffer
+                while recording_buffer:
+                    video_writer.write(recording_buffer.popleft())
+                    
             cooldown_counter = 0
         elif is_recording:
             cooldown_counter += 1
