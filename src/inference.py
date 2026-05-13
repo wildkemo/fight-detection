@@ -1,5 +1,4 @@
 import os
-# Suppress TensorFlow and CUDA logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import cv2
@@ -11,330 +10,411 @@ import argparse
 import time
 import threading
 from pathlib import Path
-from src.preprocessors.denoiser import denoise_frame
-from src.preprocessors.clahe import apply_clahe
-from src.preprocessors.normalizer import normalize_frame, denormalize_to_uint8
+from queue import Queue
 
 # Configuration
 MODEL_YOLO = "yolov8s-pose.pt"
 MODEL_TCN = "output/models/tcn_model.keras"
 TARGET_FPS = 12
+FRAME_INTERVAL = 1.0 / TARGET_FPS
 SEQUENCE_LENGTH = 36
-FIGHT_THRESHOLD = 0.5
-SMOOTHING_WINDOW = 6
-SMOOTHING_THRESHOLD = 4  # Trigger alert if 4/6 predictions are positive
-INTERACTION_DISTANCE = 300  # Distance in pixels to gate TCN inference
-MAX_LOST_FRAMES = 12
-MAX_FRAME_AGE = 2.0  # Seconds to tolerate CCTV network jitter
+FIGHT_THRESHOLD = 0.75
+SMOOTHING_WINDOW = 8
+SMOOTHING_THRESHOLD = 6
+INTERACTION_DISTANCE = 150
+MAX_LOST_FRAMES = 36
+PROCESSING_WIDTH = 854   # Resize to this width for YOLO (keeps aspect ratio)
+PROCESSING_HEIGHT = 480  # Or use 640x480 for 4:3, 854x480 for 16:9
 
-class ThreadedFrameGrabber:
-    """
-    Threaded background frame reader that continuously empties the camera 
-    buffer to prevent RTSP latency accumulation.
-    """
-    def __init__(self, source):
-        self.cap = cv2.VideoCapture(source)
-        # Attempt to disable double buffering to reduce RTSP latency
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        self.ret = False
-        self.latest_frame = None
-        self.timestamp = 0
+class AsyncTCNPredictor:
+    def __init__(self, model_path):
+        self.model = tf.keras.models.load_model(model_path)
+        self.input_queue = Queue(maxsize=5)
+        self.output_store = {}
         self.lock = threading.Lock()
         self.running = True
+        self.thread = threading.Thread(target=self._predict_loop, daemon=True)
+        self.thread.start()
+    
+    def _predict_loop(self):
+        while self.running:
+            try:
+                item = self.input_queue.get(timeout=0.05)
+                if item is None:
+                    break
+                batch_id, input_batch = item
+                if len(input_batch) > 0:
+                    preds = self.model.predict(input_batch, verbose=0)
+                    with self.lock:
+                        self.output_store[batch_id] = preds
+            except:
+                continue
+    
+    def predict_async(self, batch_id, input_batch):
+        if not self.input_queue.full():
+            self.input_queue.put((batch_id, input_batch))
+            return True
+        return False
+    
+    def get_result(self, batch_id):
+        with self.lock:
+            return self.output_store.pop(batch_id, None)
+    
+    def stop(self):
+        self.running = False
+        self.input_queue.put(None)
+
+class FastFrameGrabber:
+    def __init__(self, source):
+        if isinstance(source, int) or source == "0":
+            self.cap = cv2.VideoCapture(int(source))
+            # For webcams, request lower resolution for faster capture
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, PROCESSING_WIDTH)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, PROCESSING_HEIGHT)
+        else:
+            self.cap = cv2.VideoCapture(source)
         
-        # Start background thread
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        self.running = True
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
-
+    
     def _update(self):
         while self.running:
             ret, frame = self.cap.read()
-            if not ret:
-                self.running = False
-                break
-            
-            # MUST copy frame to prevent OpenCV internal buffer reuse from corrupting sequences
-            with self.lock:
-                self.ret = ret
-                self.latest_frame = frame.copy()
-                self.timestamp = time.time()
-
-    def get_latest(self):
+            if ret and frame is not None:
+                # Store frame at original size for display
+                with self.lock:
+                    self.latest_frame = frame
+            else:
+                time.sleep(0.001)
+    
+    def get_frame(self):
         with self.lock:
-            return self.ret, self.latest_frame, self.timestamp
-
+            if self.latest_frame is not None:
+                return True, self.latest_frame.copy()
+            return False, None
+    
     def release(self):
         self.running = False
-        self.thread.join()
+        self.thread.join(timeout=1)
         self.cap.release()
 
 def get_center(keypoints):
-    """Calculates the center of a person based on their 17 keypoints."""
-    valid_points = keypoints[keypoints[:, 2] > 0.1]
-    if len(valid_points) == 0:
+    valid = keypoints[keypoints[:, 2] > 0.1]
+    if len(valid) == 0:
         return None
-    return np.mean(valid_points[:, :2], axis=0)
+    return np.mean(valid[:, :2], axis=0)
+
+def fast_preprocess(frame):
+    """Light preprocessing only when needed (night mode)"""
+    # Skip heavy denoise by default, just return as-is
+    # CLAHE is also skipped unless night_mode is enabled
+    return frame
+
+def night_preprocess(frame):
+    """Heavier preprocessing for low light - use sparingly"""
+    # Light denoise
+    if len(frame.shape) == 3:
+        frame = cv2.fastNlMeansDenoisingColored(frame, None, 5, 5, 7, 21)
+    # CLAHE on L channel in LAB
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l = clahe.apply(l)
+    lab = cv2.merge((l, a, b))
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=str, default="0", help="Webcam ID (0) or RTSP/video path")
-    parser.add_argument("--night-mode", action="store_true", help="Enable contrast enhancement for night/grayscale video")
+    parser.add_argument("--source", type=str, default="0")
+    parser.add_argument("--night-mode", action="store_true", 
+                       help="Enable heavy preprocessing (reduces FPS)")
+    parser.add_argument("--resolution", type=str, default="854x480",
+                       help="Processing resolution WxH (e.g., 640x480, 854x480)")
     args = parser.parse_args()
 
+    # Parse resolution
+    try:
+        res_w, res_h = map(int, args.resolution.split('x'))
+        global PROCESSING_WIDTH, PROCESSING_HEIGHT
+        PROCESSING_WIDTH, PROCESSING_HEIGHT = res_w, res_h
+    except:
+        print(f"Invalid resolution {args.resolution}, using 854x480")
+    
+    print(f"Processing at {PROCESSING_WIDTH}x{PROCESSING_HEIGHT}")
+
     print("Loading models...")
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        tf.config.experimental.set_memory_growth(gpus[0], True)
+        device = 0
+        print(f"GPU: {gpus[0]}")
+    else:
+        device = 'cpu'
+        print("CPU mode")
+    
     yolo = YOLO(MODEL_YOLO)
-    gru = tf.keras.models.load_model(MODEL_GRU)
+    if device == 0:
+        yolo.to('cuda')
     
-    tracks = {}
+    tcn = AsyncTCNPredictor(MODEL_TCN)
     
-    # Input Stream via Background Thread
-    source = args.source if args.source != "0" else 0
-    grabber = ThreadedFrameGrabber(source)
+    source = int(args.source) if args.source == "0" else args.source
+    grabber = FastFrameGrabber(source)
     
     if not grabber.cap.isOpened():
-        print(f"Error: Could not open source {source}")
+        print(f"Error: Cannot open {source}")
         return
-
-    # Setup Fullscreen Window with Aspect Ratio preservation
-    win_name = "Fight Detection System - Live"
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-    cv2.setWindowProperty(win_name, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO)
-    cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-
-    # Fixed-Step Scheduler (Accumulator-based game loop style)
-    step_interval = 1.0 / TARGET_FPS
-    next_process_time = time.time()
     
-    last_valid_frame = None
+    # Choose preprocessing function
+    preprocess_func = night_preprocess if args.night_mode else fast_preprocess
     
-    # Recording setup
-    RECORD_OUTPUT_DIR = Path("output/detected_fights")
-    RECORD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    tracks = {}
+    pending_tcn = {}
+    next_batch_id = 0
+    
+    # Setup window with aspect ratio preservation
+    cv2.namedWindow("Fight Detection", cv2.WINDOW_NORMAL)
+    # Let's set a reasonable default size (16:9 aspect ratio)
+    cv2.resizeWindow("Fight Detection", 1280, 720)
+    
+    # Recording
+    output_dir = Path("output/detected_fights")
+    output_dir.mkdir(parents=True, exist_ok=True)
     is_recording = False
     video_writer = None
-    frames_since_fight = 0
-    RECORD_COOLDOWN_FRAMES = 36  # 3 seconds of cooldown at 12 FPS
-
-    print(f"Inference started. Target FPS: {TARGET_FPS}")
-
-    while grabber.running:
+    cooldown_counter = 0
+    
+    print(f"System running at {TARGET_FPS} FPS (target)")
+    print("Press 'q' to quit\n")
+    
+    # Timing
+    next_frame_time = time.time()
+    frame_count = 0
+    fps_display = 0
+    last_fps_time = time.time()
+    last_frame = None
+    
+    while True:
         current_time = time.time()
         
-        # Fixed-step accumulation to prevent temporal drift
-        if current_time < next_process_time:
-            # Yield CPU while waiting for the next logical frame tick
-            time.sleep(0.001)
+        # Strict 12 FPS timing
+        if current_time < next_frame_time:
+            sleep_time = next_frame_time - current_time
+            if sleep_time > 0.002:
+                time.sleep(sleep_time * 0.5)
             continue
-            
-        next_process_time += step_interval
-
-        # Pull latest frame + metadata
-        ret, frame, frame_ts = grabber.get_latest()
         
-        # Frame Freshness Validation & Fallback
-        is_stale = False
+        next_frame_time = current_time + FRAME_INTERVAL
+        
+        # Get frame
+        ret, frame = grabber.get_frame()
         if not ret or frame is None:
-            if last_valid_frame is not None:
-                frame = last_valid_frame
-                is_stale = True
+            if last_frame is not None:
+                frame = last_frame
             else:
                 continue
         else:
-            # Check age (Soft rejection threshold to handle CCTV jitter)
-            age = current_time - frame_ts
-            if age > MAX_FRAME_AGE:
-                # Severe network lag: Re-use last valid but mark as stale
-                if last_valid_frame is not None:
-                    frame = last_valid_frame
-                    is_stale = True
-                else:
-                    continue
-            else:
-                last_valid_frame = frame # Update fallback
-
-        # 3-Step Preprocessing Pipeline (Align with Training)
-        # 1. Denoise -> 2. CLAHE -> 3. Normalize/Denormalize (Clipping)
-        proc_frame = denoise_frame(frame)
-        proc_frame = apply_clahe(proc_frame)
-        proc_frame = normalize_frame(proc_frame)
-        proc_frame = denormalize_to_uint8(proc_frame)
-
-        # Step 1: YOLO-Pose Tracking
-        # Use slightly lower confidence threshold for live tracking stability
-        conf_thresh = 0.25 
-        results = yolo.track(proc_frame, persist=True, tracker="bytetrack.yaml", verbose=False, conf=conf_thresh)
+            last_frame = frame
         
-        current_frame_ids = []
+        frame_count += 1
+        
+        # Resize for YOLO processing (maintains aspect ratio)
+        h, w = frame.shape[:2]
+        scale = min(PROCESSING_WIDTH / w, PROCESSING_HEIGHT / h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        scale_w = new_w / w
+        scale_h = new_h / h
+        proc_frame = cv2.resize(frame, (new_w, new_h))
+        
+        # Apply optional preprocessing
+        proc_frame = preprocess_func(proc_frame)
+        
+        # YOLO tracking on resized frame
+        results = yolo.track(proc_frame, 
+                            persist=True,
+                            tracker="bytetrack.yaml",
+                            conf=0.25,
+                            iou=0.5,
+                            verbose=False,
+                            device=device)
+        
+        # Scale boxes back to original frame coordinates
+        current_track_ids = []
         if results[0].boxes is not None and results[0].boxes.id is not None:
             track_ids = results[0].boxes.id.int().cpu().tolist()
-            keypoints_batch = results[0].keypoints.data.cpu().numpy() # (N, 17, 3)
-            bboxes = results[0].boxes.xyxy.cpu().numpy()
+            boxes = results[0].boxes.xyxy.cpu().numpy()
+            keypoints = results[0].keypoints.data.cpu().numpy() if results[0].keypoints is not None else None
             
+            # Scale boxes and keypoints back to original frame size
             for i, track_id in enumerate(track_ids):
-                current_frame_ids.append(track_id)
-                kpts = keypoints_batch[i] # (17, 3)
+                current_track_ids.append(track_id)
                 
+                # Scale box
+                x1, y1, x2, y2 = boxes[i]
+                x1 = int(x1 / scale_w)
+                x2 = int(x2 / scale_w)
+                y1 = int(y1 / scale_h)
+                y2 = int(y2 / scale_h)
+                
+                # Scale keypoints
+                if keypoints is not None and i < len(keypoints):
+                    kpts = keypoints[i].copy()
+                    kpts[:, 0] /= scale_w
+                    kpts[:, 1] /= scale_h
+                else:
+                    kpts = None
+                
+                # Initialize or update track
                 if track_id not in tracks:
                     tracks[track_id] = {
                         "buffer": deque(maxlen=SEQUENCE_LENGTH),
                         "history": deque(maxlen=SMOOTHING_WINDOW),
-                        "lost": 0,
+                        "lost_frames": 0,
                         "is_fight": False,
-                        "last_prob": 0.0
+                        "last_prob": 0.0,
+                        "bbox": (x1, y1, x2, y2),
+                        "last_center": None
                     }
+                else:
+                    tracks[track_id]["bbox"] = (x1, y1, x2, y2)
                 
-                # Append to buffer. Stale frames are processed to maintain sequence continuity
-                # but don't represent fresh motion.
-                tracks[track_id]["buffer"].append(kpts)
-                tracks[track_id]["lost"] = 0
-                tracks[track_id]["last_pose"] = kpts
-                tracks[track_id]["bbox"] = bboxes[i]
-
-        # Step 2: Track Housekeeping (Remove lost tracks)
-        all_track_ids = list(tracks.keys())
-        for tid in all_track_ids:
-            if tid not in current_frame_ids:
-                tracks[tid]["lost"] += 1
-                if tracks[tid]["lost"] > MAX_LOST_FRAMES:
-                    del tracks[tid]
-
-        # Step 3: Interaction Gating & GRU Inference
-        eligible_tids = []
-        input_batch = []
+                tracks[track_id]["lost_frames"] = 0
+                if kpts is not None:
+                    tracks[track_id]["buffer"].append(kpts)
+                    tracks[track_id]["last_center"] = get_center(kpts)
         
-        for tid, data in tracks.items():
-            if len(data["buffer"]) == SEQUENCE_LENGTH:
-                # Interaction Gate: Check distance to any OTHER active track
-                center_a = get_center(data["last_pose"])
-                if center_a is None: continue
-                
-                is_near_someone = False
-                for other_tid, other_data in tracks.items():
-                    if tid == other_tid: continue
-                    center_b = get_center(other_data["last_pose"])
-                    if center_b is None: continue
-                    
-                    dist = np.linalg.norm(center_a - center_b)
+        # Remove lost tracks
+        for track_id in list(tracks.keys()):
+            if track_id not in current_track_ids:
+                tracks[track_id]["lost_frames"] += 1
+                if tracks[track_id]["lost_frames"] > MAX_LOST_FRAMES:
+                    del tracks[track_id]
+        
+        # Process completed TCN predictions
+        for batch_id in list(pending_tcn.keys()):
+            result = tcn.get_result(batch_id)
+            if result is not None:
+                track_ids = pending_tcn[batch_id]
+                for i, track_id in enumerate(track_ids):
+                    if track_id in tracks:
+                        prob = result[i][0]
+                        tracks[track_id]["last_prob"] = prob
+                        tracks[track_id]["history"].append(1 if prob > FIGHT_THRESHOLD else 0)
+                        tracks[track_id]["is_fight"] = sum(tracks[track_id]["history"]) >= SMOOTHING_THRESHOLD
+                del pending_tcn[batch_id]
+        
+        # Interaction detection and TCN submission
+        eligible_batch = []
+        track_items = list(tracks.items())
+        
+        for track_id, data in track_items:
+            if len(data["buffer"]) == SEQUENCE_LENGTH and data["last_center"] is not None:
+                is_interacting = False
+                for other_id, other_data in track_items:
+                    if track_id == other_id or other_data["last_center"] is None:
+                        continue
+                    dist = np.linalg.norm(data["last_center"] - other_data["last_center"])
                     if dist < INTERACTION_DISTANCE:
-                        is_near_someone = True
+                        is_interacting = True
                         break
                 
-                if is_near_someone:
-                    eligible_tids.append(tid)
-                    # Flatten sequence (36, 17, 3) -> (36, 51)
-                    seq = np.array(data["buffer"]).reshape(SEQUENCE_LENGTH, 51)
-                    input_batch.append(seq)
+                if is_interacting:
+                    eligible_batch.append(track_id)
                 else:
-                    # Not interacting? Clear history to prevent stale alerts
                     data["history"].append(0)
                     data["is_fight"] = False
-                    data["last_prob"] = 0.0
-
-        if input_batch:
-            preds = tcn.predict(np.array(input_batch), verbose=0)
-            for i, tid in enumerate(eligible_tids):
-                prob = preds[i][0]
-                tracks[tid]["last_prob"] = prob
-                # Step 4: Temporal Smoothing (4/6 Rule)
-                tracks[tid]["history"].append(1 if prob > FIGHT_THRESHOLD else 0)
-                tracks[tid]["is_fight"] = (sum(tracks[tid]["history"]) >= SMOOTHING_THRESHOLD)
-
-        # Step 5: Visual Feedback
-        annotated_frame = frame.copy()
         
-        # Draw bounding boxes and labels
-        for tid, data in tracks.items():
-            if "bbox" not in data: continue
-            x1, y1, x2, y2 = map(int, data["bbox"])
-            
-            is_fight = data.get("is_fight", False)
+        if eligible_batch:
+            batch_input = []
+            for track_id in eligible_batch:
+                seq = np.array(tracks[track_id]["buffer"]).reshape(SEQUENCE_LENGTH, 51)
+                batch_input.append(seq)
+            if batch_input:
+                batch_id = next_batch_id
+                next_batch_id += 1
+                tcn.predict_async(batch_id, np.array(batch_input))
+                pending_tcn[batch_id] = eligible_batch
+        
+        # Visualization on original frame (not resized)
+        display = frame.copy()
+        
+        # Calculate how many active tracks are fighting (mutual combat requirement)
+        fighting_tracks = [track_id for track_id, data in track_items if data["is_fight"] and data["bbox"] is not None and data["lost_frames"] <= 2]
+        any_fight = len(fighting_tracks) >= 2
+        
+        for track_id, data in track_items:
+            if data["bbox"] is None or data["lost_frames"] > 2:
+                continue
+            x1, y1, x2, y2 = data["bbox"]
+            is_fight = data["is_fight"]
             color = (0, 0, 255) if is_fight else (0, 255, 0)
-            bg_color = (0, 0, 200) if is_fight else (0, 200, 0)
-            text_color = (255, 255, 255)
             
-            # Label includes the temporal history score and probability percentage
-            history_sum = sum(data["history"]) if "history" in data else 0
-            prob_pct = data.get("last_prob", 0.0) * 100
-            label = f"ID:{tid} FIGHT! {prob_pct:.1f}% ({history_sum}/6)" if is_fight else f"ID:{tid} OK {prob_pct:.1f}% ({history_sum}/6)"
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+            label = f"ID:{track_id}"
+            if is_fight:
+                label += " FIGHT!"
+            elif data["last_prob"] > 0:
+                label += f" {data['last_prob']*100:.0f}%"
             
-            # Draw box
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            
-            # Draw label background for readability
-            (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            cv2.rectangle(annotated_frame, (x1, y1 - text_h - 10), (x1 + text_w, y1), bg_color, -1)
-            cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
-
-        # Global screen alert
-        any_fight = any(d.get("is_fight", False) for d in tracks.values())
+            (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(display, (x1, y1 - text_h - 5), (x1 + text_w, y1), color, -1)
+            cv2.putText(display, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        
         if any_fight:
-            # Draw a massive red banner at the top
-            cv2.rectangle(annotated_frame, (0, 0), (frame.shape[1], 80), (0, 0, 255), -1)
-            cv2.putText(annotated_frame, "!!! VIOLENCE DETECTED !!!", (50, 55), 
-                        cv2.FONT_HERSHEY_DUPLEX, 1.5, (255, 255, 255), 3)
-
-        # Recording Logic
+            cv2.rectangle(display, (0, 0), (display.shape[1], 70), (0,0,255), -1)
+            cv2.putText(display, "!!! VIOLENCE DETECTED !!!", (display.shape[1]//2 - 200, 45),
+                       cv2.FONT_HERSHEY_DUPLEX, 1.2, (255,255,255), 2)
+        
+        # Recording
         if any_fight:
             if not is_recording:
                 is_recording = True
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                out_path = RECORD_OUTPUT_DIR / f"fight_{timestamp}.mp4"
+                out_path = output_dir / f"fight_{timestamp}.mp4"
+                h, w = display.shape[:2]
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                h, w = frame.shape[:2]
                 video_writer = cv2.VideoWriter(str(out_path), fourcc, TARGET_FPS, (w, h))
-                print(f"🚨 Started recording: {out_path}")
-            frames_since_fight = 0
-        else:
-            if is_recording:
-                frames_since_fight += 1
-                if frames_since_fight > RECORD_COOLDOWN_FRAMES:
-                    is_recording = False
-                    if video_writer:
-                        video_writer.release()
-                        video_writer = None
-                    print("🛑 Stopped recording.")
-
-        if is_recording and video_writer is not None:
-            # Draw recording indicator
-            cv2.circle(annotated_frame, (frame.shape[1] - 30, 40), 10, (0, 0, 255), -1)
-            cv2.putText(annotated_frame, "REC", (frame.shape[1] - 80, 45), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            video_writer.write(annotated_frame)
-
-        # System Overlay with Stream Freshness Stats
-        overlay = annotated_frame.copy()
-        h, w = frame.shape[:2]
-        cv2.rectangle(overlay, (10, h - 145), (370, h - 10), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
+                print(f"[REC] Started: {out_path.name}")
+            cooldown_counter = 0
+        elif is_recording:
+            cooldown_counter += 1
+            if cooldown_counter > TARGET_FPS * 3:
+                is_recording = False
+                if video_writer:
+                    video_writer.release()
+                    video_writer = None
+                print("[REC] Stopped")
         
-        cv2.putText(annotated_frame, "SYSTEM STATUS:", (20, h - 115), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(annotated_frame, f"Active Tracks: {len(tracks)}", (20, h - 90), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(annotated_frame, f"GRU Calls: {len(eligible_tids)}", (20, h - 65), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        if is_recording and video_writer:
+            video_writer.write(display)
         
-        status_color = (0, 0, 255) if is_stale else (0, 255, 0)
-        status_text = "DROPPING FRAMES / STALE" if is_stale else "STABLE (LIVE)"
-        cv2.putText(annotated_frame, f"Stream Status: {status_text}", (20, h - 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+        # FPS display
+        if current_time - last_fps_time >= 1.0:
+            fps_display = frame_count
+            frame_count = 0
+            last_fps_time = current_time
         
-        cv2.putText(annotated_frame, f"Logic Rate: {TARGET_FPS} FPS", (20, h - 15), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-        # Force 16:9 Aspect Ratio for non-square DVR streams (e.g. 1080N / 960x1080)
-        display_frame = cv2.resize(annotated_frame, (1280, 720))
-
-        cv2.imshow(win_name, display_frame)
+        # Status overlay
+        cv2.putText(display, f"FPS: {fps_display} | Tracks: {len(tracks)} | Queue: {len(pending_tcn)}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+        
+        # Show window - it will maintain original frame aspect ratio
+        cv2.imshow("Fight Detection", display)
+        
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
-    if video_writer is not None:
-        video_writer.release()
+    
+    tcn.stop()
     grabber.release()
+    if video_writer:
+        video_writer.release()
     cv2.destroyAllWindows()
+    print("\nStopped")
 
 if __name__ == "__main__":
     main()
-)
