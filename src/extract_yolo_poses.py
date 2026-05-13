@@ -53,7 +53,7 @@ def main():
             
             # Run tracking inference
             # persist=True keeps IDs across frames. verbose=False hides per-frame logs.
-            results = model.track(img, persist=True, tracker="bytetrack.yaml", verbose=False)
+            results = model.track(img, persist=True, tracker="bytetrack.yaml", verbose=False, device=0)
             
             if results[0].boxes is not None and results[0].boxes.id is not None:
                 track_ids = results[0].boxes.id.int().cpu().tolist()
