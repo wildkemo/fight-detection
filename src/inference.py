@@ -103,6 +103,8 @@ class FastFrameGrabber:
     def _update(self):
         while self.running:
             ret, frame = self.cap.read()
+            if ret and frame is None:
+                continue
             if ret and frame is not None:
                 # Store frame at original size for display
                 with self.lock:
@@ -228,6 +230,10 @@ def main():
     frame_count = 0
     fps_display = 0
     last_fps_time = time.time()
+    
+    # Fight duration tracking
+    fight_duration_counter = 0
+    REQUIRED_FIGHT_FRAMES = TARGET_FPS * 3 # 3 seconds
     
     # Initial frame resize and setup
     first_frame = cv2.resize(first_frame, (preview_w, preview_h))
@@ -380,9 +386,31 @@ def main():
         # Visualization on original frame (already a copy from grabber)
         display = frame
         
-        # Calculate how many active tracks are fighting (mutual combat requirement)
+        # Calculate how many active tracks are fighting (mutual combat requirement + proximity)
         fighting_tracks = [track_id for track_id, data in track_items if data["is_fight"] and data["bbox"] is not None and data["lost_frames"] <= 2]
-        any_fight = len(fighting_tracks) >= 2
+        
+        potential_fight = False
+        if len(fighting_tracks) >= 2:
+            # Check if at least two fighting people are close to each other
+            for i in range(len(fighting_tracks)):
+                for j in range(i + 1, len(fighting_tracks)):
+                    id1 = fighting_tracks[i]
+                    id2 = fighting_tracks[j]
+                    c1 = tracks[id1]["last_center"]
+                    c2 = tracks[id2]["last_center"]
+                    if c1 is not None and c2 is not None:
+                        if np.linalg.norm(c1 - c2) < INTERACTION_DISTANCE:
+                            potential_fight = True
+                            break
+                if potential_fight: break
+        
+        # Update fight duration counter
+        if potential_fight:
+            fight_duration_counter += 1
+        else:
+            fight_duration_counter = max(0, fight_duration_counter - 1) # Gentle decay instead of instant reset
+        
+        any_fight = fight_duration_counter >= REQUIRED_FIGHT_FRAMES
         
         for track_id, data in track_items:
             if data["bbox"] is None or data["lost_frames"] > 2:
@@ -406,6 +434,11 @@ def main():
             cv2.rectangle(display, (0, 0), (display.shape[1], 70), (0,0,255), -1)
             cv2.putText(display, "!!! VIOLENCE DETECTED !!!", (display.shape[1]//2 - 200, 45),
                        cv2.FONT_HERSHEY_DUPLEX, 1.2, (255,255,255), 2)
+        elif fight_duration_counter > 0:
+            # Show progress bar for fight detection
+            progress = fight_duration_counter / REQUIRED_FIGHT_FRAMES
+            bar_w = int(display.shape[1] * progress)
+            cv2.rectangle(display, (0, 0), (bar_w, 10), (0, 165, 255), -1)
         
         # Recording
         if any_fight:
