@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import GRU, Dense, Dropout, Bidirectional
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, GlobalAveragePooling1D, BatchNormalization, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.regularizers import l2
 from sklearn.utils.class_weight import compute_class_weight
@@ -14,19 +14,30 @@ from pathlib import Path
 DATASET_DIR = Path("output/dataset")
 MODEL_DIR = Path("output/models")
 EVAL_DIR = Path("output/eval")
-MODEL_PATH = MODEL_DIR / "gru_model.keras"
-METRICS_PATH = EVAL_DIR / "gru_metrics.json"
+MODEL_PATH = MODEL_DIR / "tcn_model.keras"
+METRICS_PATH = EVAL_DIR / "tcn_metrics.json"
 
 def main():
-    print("Loading datasets (YOLO-Pose versions)...")
-    X_train = np.load(DATASET_DIR / "X_train_yolo.npy")
-    y_train = np.load(DATASET_DIR / "y_train_yolo.npy")
-    X_val = np.load(DATASET_DIR / "X_val_yolo.npy")
-    y_val = np.load(DATASET_DIR / "y_val_yolo.npy")
-    X_test = np.load(DATASET_DIR / "X_test_yolo.npy")
-    y_test = np.load(DATASET_DIR / "y_test_yolo.npy")
+    print("\n" + "="*60)
+    print("!!! FIGHT DETECTION SYSTEM - TCN MODEL TRAINING !!!")
+    print("="*60 + "\n")
 
-    print(f"Train samples: {len(X_train)}, Val samples: {len(X_val)}, Test samples: {len(X_test)}")
+    print("Loading datasets (YOLO-Pose versions)...")
+    try:
+        X_train = np.load(DATASET_DIR / "X_train_yolo.npy")
+        y_train = np.load(DATASET_DIR / "y_train_yolo.npy")
+        X_val = np.load(DATASET_DIR / "X_val_yolo.npy")
+        y_val = np.load(DATASET_DIR / "y_val_yolo.npy")
+        X_test = np.load(DATASET_DIR / "X_test_yolo.npy")
+        y_test = np.load(DATASET_DIR / "y_test_yolo.npy")
+    except FileNotFoundError:
+        print(f"Error: Dataset files not found in {DATASET_DIR}. Please run build_yolo_sequences first.")
+        return
+
+    print(f"[*] Train samples: {len(X_train)}")
+    print(f"[*] Val samples: {len(X_val)}")
+    print(f"[*] Test samples: {len(X_test)}")
+    print(f"[*] Sequence Shape: {X_train.shape[1:]} (Steps, Features)")
 
     # Step 1: Compute Class Weights
     classes = np.unique(y_train)
@@ -34,14 +45,27 @@ def main():
     class_weights = dict(zip(classes, weights))
     # Extreme focus on Recall (Zero Misses Goal)
     class_weights[1] = class_weights[1] * 3.0
-    print(f"Adjusted Class weights for high recall: {class_weights}")
+    print(f"[*] Adjusted Class weights for high recall: {class_weights}")
 
-    # Step 2: Build Model (per SCOPE.md + Regularization)
+    # Step 2: Build Model (TCN / 1D-CNN Architecture)
+    # This architecture is superior for coordinate-based motion analysis
     model = Sequential([
-        GRU(64, input_shape=(X_train.shape[1], X_train.shape[2]),
-            kernel_regularizer=l2(0.01),
-            recurrent_dropout=0.2),
-        Dense(32, activation='relu', kernel_regularizer=l2(0.01)),
+        # Block 1: Local temporal patterns
+        Conv1D(filters=64, kernel_size=3, activation='relu', padding='causal', 
+               input_shape=(X_train.shape[1], X_train.shape[2])),
+        BatchNormalization(),
+        MaxPooling1D(pool_size=2),
+        
+        # Block 2: Broader temporal patterns
+        Conv1D(filters=128, kernel_size=3, activation='relu', padding='causal'),
+        BatchNormalization(),
+        MaxPooling1D(pool_size=2),
+        
+        # Global temporal aggregation
+        GlobalAveragePooling1D(),
+        
+        # Classifier
+        Dense(64, activation='relu', kernel_regularizer=l2(0.01)),
         Dropout(0.5),
         Dense(1, activation='sigmoid')
     ])
@@ -56,7 +80,7 @@ def main():
     ]
 
     # Step 4: Training
-    print("Starting training...")
+    print("\nStarting training...")
     epochs = 100 
     history = model.fit(
         X_train, y_train,
@@ -70,17 +94,17 @@ def main():
     # Step 5: Save Model
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     model.save(MODEL_PATH)
-    print(f"Model saved to {MODEL_PATH}")
+    print(f"\n[+] Model saved to {MODEL_PATH}")
 
-    # Step 6: GRU-Only Evaluation (per EVALUATION.md)
-    print("Evaluating model on test set with low threshold for high recall...")
+    # Step 6: TCN-Only Evaluation
+    print("Evaluating model on test set...")
     y_pred_prob = model.predict(X_test)
+    # Low threshold for high recall goal
     y_pred = (y_pred_prob > 0.3).astype(int)
 
     cm = confusion_matrix(y_test, y_pred)
     report = classification_report(y_test, y_pred, output_dict=True)
 
-    # Flatten confusion matrix for JSON
     # [[tn, fp], [fn, tp]]
     tn, fp, fn, tp = cm.ravel()
     
@@ -92,15 +116,17 @@ def main():
             "false_negatives": int(fn),
             "true_positives": int(tp)
         },
-        "details": report
+        "details": report,
+        "architecture": "TCN (1D-CNN)",
+        "input_shape": list(X_train.shape[1:])
     }
 
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     with open(METRICS_PATH, "w") as f:
         json.dump(metrics, f, indent=4)
     
-    print(f"Metrics saved to {METRICS_PATH}")
-    print("\nTraining script verification complete.")
+    print(f"[+] Metrics saved to {METRICS_PATH}")
+    print("\nTraining complete.")
 
 if __name__ == "__main__":
     main()

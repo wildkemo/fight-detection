@@ -17,14 +17,14 @@ from src.preprocessors.normalizer import normalize_frame, denormalize_to_uint8
 
 # Configuration
 MODEL_YOLO = "yolov8s-pose.pt"
-MODEL_GRU = "output/models/gru_model.keras"
-TARGET_FPS = 30
-SEQUENCE_LENGTH = 96
+MODEL_TCN = "output/models/tcn_model.keras"
+TARGET_FPS = 12
+SEQUENCE_LENGTH = 36
 FIGHT_THRESHOLD = 0.5
-SMOOTHING_WINDOW = 15
-SMOOTHING_THRESHOLD = 9  # Trigger alert if 9/15 predictions are positive
-INTERACTION_DISTANCE = 300  # Distance in pixels to gate GRU inference
-MAX_LOST_FRAMES = 30
+SMOOTHING_WINDOW = 6
+SMOOTHING_THRESHOLD = 4  # Trigger alert if 4/6 predictions are positive
+INTERACTION_DISTANCE = 300  # Distance in pixels to gate TCN inference
+MAX_LOST_FRAMES = 12
 MAX_FRAME_AGE = 2.0  # Seconds to tolerate CCTV network jitter
 
 class ThreadedFrameGrabber:
@@ -232,7 +232,7 @@ def main():
                     data["last_prob"] = 0.0
 
         if input_batch:
-            preds = gru.predict(np.array(input_batch), verbose=0)
+            preds = tcn.predict(np.array(input_batch), verbose=0)
             for i, tid in enumerate(eligible_tids):
                 prob = preds[i][0]
                 tracks[tid]["last_prob"] = prob
