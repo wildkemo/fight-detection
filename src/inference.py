@@ -13,7 +13,7 @@ from pathlib import Path
 from queue import Queue
 
 # Configuration
-MODEL_YOLO = "yolov8n-pose.pt"
+MODEL_YOLO = "yolov8s-pose.pt"
 MODEL_TCN = "output/models/tcn_model_quant.tflite"
 TARGET_FPS = 12
 FRAME_INTERVAL = 1.0 / TARGET_FPS
@@ -90,9 +90,6 @@ class FastFrameGrabber:
     def __init__(self, source):
         if isinstance(source, int) or source == "0":
             self.cap = cv2.VideoCapture(int(source))
-            # For webcams, request lower resolution for faster capture
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, PROCESSING_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, PROCESSING_HEIGHT)
         else:
             self.cap = cv2.VideoCapture(source)
         
@@ -197,10 +194,24 @@ def main():
     pending_tcn = {}
     next_batch_id = 0
     
-    # Setup window with aspect ratio preservation
+    # Wait for first frame to get native resolution
+    print("Waiting for stream...")
+    first_frame = None
+    while first_frame is None:
+        ret, first_frame = grabber.get_frame()
+        if not ret:
+            time.sleep(0.1)
+            continue
+    
+    h_orig, w_orig = first_frame.shape[:2]
+    # Force 16:9 resolution for the entire pipeline
+    preview_w = w_orig
+    preview_h = int(w_orig * 9 / 16)
+    print(f"Stream detected: {w_orig}x{h_orig} -> Forced 16:9: {preview_w}x{preview_h}")
+
+    # Setup window with forced 16:9 aspect ratio
     cv2.namedWindow("Fight Detection", cv2.WINDOW_NORMAL)
-    # Let's set a reasonable default size (16:9 aspect ratio)
-    cv2.resizeWindow("Fight Detection", 1280, 720)
+    cv2.resizeWindow("Fight Detection", preview_w, preview_h)
     
     # Recording
     output_dir = Path("output/detected_fights")
@@ -217,7 +228,10 @@ def main():
     frame_count = 0
     fps_display = 0
     last_fps_time = time.time()
-    last_frame = None
+    
+    # Initial frame resize and setup
+    first_frame = cv2.resize(first_frame, (preview_w, preview_h))
+    last_frame = first_frame # Reuse the frame we already grabbed
     
     while True:
         current_time = time.time()
@@ -239,6 +253,8 @@ def main():
             else:
                 continue
         else:
+            # Force 16:9 aspect ratio
+            frame = cv2.resize(frame, (preview_w, preview_h))
             last_frame = frame
         
         frame_count += 1
