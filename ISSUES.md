@@ -1,4 +1,4 @@
-# Fight Detection Pipeline Review & Fixes
+<!-- # Fight Detection Pipeline Review & Fixes
 
 ---
 
@@ -842,25 +842,27 @@ Makes experiments reproducible.
 
 # Recommended Final Pipeline
 
-```text
-YOLOv8-pose
-    ↓
-stable tracking
-    ↓
+YOLOv8n detector
+↓
+BoT-SORT or ByteTrack
+↓
+interaction filtering
+↓
+RTMPose
+↓
 save frame-level + track-level data
-    ↓
+↓
 normalize skeletons
-    ↓
-compute velocity features
-    ↓
+↓
+compute temporal motion features
+↓
 build pairwise interaction sequences
-    ↓
+↓
 residual dilated TCN
-    ↓
+↓
 validation-based threshold tuning
-    ↓
+↓
 fight probability
-```
 
 ---
 
@@ -890,4 +892,4 @@ These changes alone should significantly reduce:
 
 ```text
 standing close together → predicted as fighting
-```
+``` -->

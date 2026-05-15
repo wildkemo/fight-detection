@@ -1,50 +1,47 @@
-# GEMINI.md - Fight Detection System
+# CPU-Optimized Fight Detection Pipeline (Interaction-Aware)
 
-## Project Overview
-This project implements a real-time **Fight Detection System** designed for efficiency on CPU-only systems and edge devices. The system leverages **YOLOv8-Pose** for simultaneous human detection and skeleton extraction, followed by a **Temporal Convolutional Network (1D-CNN)** for temporal classification.
+This project implements a multi-stage pipeline for robust fight detection in CCTV-style videos, prioritizing **pairwise interactions** and **motion-based features** over static single-person poses.
 
-### Main Technologies
-- **Language:** Python 3.13
-- **Pose Estimation & Tracking:** YOLOv8s-Pose (with ByteTrack)
-- **Temporal Modeling:** Temporal Convolutional Network (1D-CNN) with Dilated Receptive Fields
-- **Deployment:** TensorFlow 2.21
-- **Utilities:** OpenCV, NumPy, Scikit-learn
+## 🏗️ Architecture Overview
 
----
+The system follows a 5-stage decoupled pipeline:
+1.  **`detect_and_track.py`**: YOLOv8n (person only) + BoT-SORT/ByteTrack. Focus on stable IDs.
+2.  **`extract_pose.py`**: RTMPose on cropped bboxes. Must convert crop coords to full-frame coords.
+3.  **`build_sequences.py`**: Feature engineering stage. Converts raw skeletons into normalized interaction features.
+4.  **`train_tcn.py`**: Residual Dilated Temporal Convolutional Network (TCN).
+5.  **`inference.py`**: Real-time integration with proximity-based pose optimization.
 
-## Architecture Pipeline
-The system follows a high-performance sequential pipeline:
-1.  **Deterministic Frame Sampling:** Input streams are sampled at exactly **12 FPS** using frame skipping to ensure temporal consistency with training data.
-2.  **YOLOv8-Pose Extraction:** A single inference pass identifies multiple persons and their 17 body keypoints in global frame coordinates.
-3.  **ByteTrack Tracking:** Assigns persistent unique IDs to individuals, preventing "identity teleportation" and ensuring clean motion sequences.
-4.  **Interaction Gating:** To save CPU cycles, the TCN is only invoked for persons in close proximity to others or exhibiting high-acceleration motion.
-5.  **TCN Inference:** Classifies **36-frame** motion buffers (~3 seconds) using a 1D-Convolutional stack that captures hierarchical temporal patterns.
-6.  **Temporal Smoothing (4/6 Rule):** An alert is only triggered if 4 out of the last 6 sequences are flagged as violent, minimizing flickering and false positives.
+## 🛠️ Technical Mandates & Conventions
 
----
+### 1. Interaction-First Modeling
+*   **Mandate**: Never train on isolated single-person sequences. All training samples MUST represent interactions (Pairwise: Person A + Person B).
+*   **Context**: Fights are relational events. Single-person "aggressive" motion often causes false positives in crowded or high-activity scenes.
 
-## Building and Running
+### 2. Skeleton Normalization
+*   **Formula**: `kpts_norm = (kpts - pelvis_center) / torso_length`.
+*   **Requirement**: All features must be scale-invariant and translation-invariant to handle varying camera distances and resolutions.
 
-### Setup
-1.  **Environment:** Ensure Python 3.13 is installed.
-2.  **Installation:**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
+### 3. Feature Engineering (The "Strong Signal" Rule)
+Every sequence sample (36 frames) must include:
+*   **Motion**: Velocity ($v$) and Acceleration ($a$) per joint.
+*   **Energy**: Intensity of movement ($\sum ||kpts_t - kpts_{t-1}||^2$).
+*   **Interaction**: Inter-person distance, closing speed, and relative velocity.
+*   **Geometry**: Critical joint distances (e.g., hand-to-head, wrist-to-torso).
 
-### Execution
-1.  **Preprocessing:** `python -m src.preprocess` (Extracts frames at 12 FPS + GPU Denoise/CLAHE)
-2.  **Pose Extraction:** `python -m src.extract_yolo_poses` (Generates JSON tracks using GPU)
-3.  **Sequence Building:** `python -m src.build_yolo_sequences` (Creates .npy datasets)
-4.  **Training:** `python -m src.train` (Trains the 1D-CNN model)
-5.  **Inference:** `python -m src.inference --source <video_path_or_0>`
+### 4. Data Integrity
+*   **Contiguity**: Only build sequences from contiguous frames. If a track has a gap, split the sequence.
+*   **Confidence**: Mask or zero-fill keypoints with confidence < 0.3.
 
----
+### 5. Training Standards
+*   **Weights**: Use balanced class weights. Do NOT artificially inflate the positive class weight (e.g., avoid `class_weights[1] *= 3.0`) as it leads to excessive false positives.
+*   **Thresholding**: Never hardcode a low threshold (like 0.3). Always tune the decision threshold using validation data to optimize the F1-score/Precision-Recall balance.
+*   **Architecture**: Use **Dilated Convolutions** and **Residual Blocks**. Avoid aggressive MaxPooling that might erase short-duration motion bursts (punches/impacts).
 
-## Technical Constraints
--   **Sampling Rate:** Strictly 12 FPS (deterministic).
--   **Sequence Length:** 36 frames.
--   **Architecture:** 1D-CNN (TCN) with Batch Normalization and 0.5 Dropout.
--   **Detection Threshold:** 0.3 (Recall-optimized).
+## 🚀 Optimization Strategy
+*   **Proximity Filter**: In `inference.py`, only run RTMPose if `distance(Person_A, Person_B) < Interaction_Threshold`. This ensures CPU feasibility by skipping pose estimation for isolated individuals.
+
+## 📁 Directory Structure
+*   `data/tracks/`: JSON files with bbox and IDs.
+*   `data/poses/`: JSON files with RTMPose skeletons (full-frame coords).
+*   `data/sequences/`: Preprocessed `.npy` files for training.
+*   `models/`: ONNX (Detection/Pose) and TFLite (TCN) models.
