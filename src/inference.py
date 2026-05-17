@@ -94,23 +94,29 @@ class RecordingManager:
         self.cooldown = 0
         self.active = False
 
-    def update(self, frame, alert):
-        self.frame_buffer.append(frame.copy())
+    def update(self, frame, alert, count=1):
+        frame_copy = frame.copy()
+        for _ in range(count):
+            self.frame_buffer.append(frame_copy)
 
+        started_now = False
         if alert:
             self.cooldown = self.cooldown_len
             if not self.active:
                 self.start()
+                started_now = True
 
-        if self.active:
+        if self.active and not started_now:
             try:
-                self.process.stdin.write(frame.tobytes())
+                frame_bytes = frame.tobytes()
+                for _ in range(count):
+                    self.process.stdin.write(frame_bytes)
             except BrokenPipeError:
                 print("[REC] FFmpeg pipe broken. Stopping recording.")
                 self.stop()
             
             if not alert:
-                self.cooldown -= 1
+                self.cooldown -= count
                 if self.cooldown <= 0:
                     self.stop()
 
@@ -397,6 +403,7 @@ class InferencePipeline:
                 time.sleep(0.005) # Prevent busy-wait
                 continue
 
+            frames_to_write = 1 if last_idx == -1 else frame_idx - last_idx
             last_idx = frame_idx
 
             # Proper Loop FPS
@@ -426,7 +433,7 @@ class InferencePipeline:
                 cv2.putText(preview, f"!!! VIOLENCE DETECTED ({self.max_conf*100:.1f}%) !!!", 
                             (15, 33), cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
 
-            rec.update(preview, alert)
+            rec.update(preview, alert, count=frames_to_write)
 
             # --- RENDER DASHBOARD (Heavy, lower frequency) ---
             if curr_time - ui_last_time > 1/15.0:
