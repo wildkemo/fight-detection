@@ -11,7 +11,7 @@ MIN_TRACK_LENGTH = 12
 MAX_INTERPOLATION_GAP = 2  # Only interpolate tiny gaps
 MAX_GAP_THRESHOLD = 5      # Terminate track if gap is larger than this
 MIN_AVG_MOTION = 1.0       # Minimum average pixels moved per frame to be considered "human"
-CONF_THRESH = 0.3
+CONF_THRESH = 0.2
 
 def process_video_directory(video_dir, output_dir, model, tracker_config, limit=None):
     """Processes all videos in a directory, detecting and tracking people."""

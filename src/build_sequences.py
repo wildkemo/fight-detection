@@ -49,7 +49,11 @@ class FeatureExtractor:
             )
 
             dist = np.sqrt(np.sum((coords - torso_mean) ** 2, axis=2))
-            return np.mean(dist, axis=1) + 1e-6
+            # Mask distances for low-confidence joints to avoid (0,0) pulling the scale
+            dist = dist * weights[:, :, 0]
+            # Average over only the visible joints
+            scale = np.sum(dist, axis=1) / (np.sum(weights[:, :, 0], axis=1) + 1e-6)
+            return scale + 1e-6
 
         scale_A = get_scale(kpts_A)
         scale_B = get_scale(kpts_B)
@@ -191,6 +195,9 @@ def build_sequences(poses_dir, output_dir, proximity_thresh=0.4):
                         p1_center = (p1["kpts"][11, :2] + p1["kpts"][12, :2]) / 2
                         p2_center = (p2["kpts"][11, :2] + p2["kpts"][12, :2]) / 2
 
+                        # Diagonal normalization for proximity check
+                        # If the JSONs are in pixels, we should use a reference resolution or diagonal.
+                        # Assuming 1080p as reference for the 0.4 threshold.
                         scale = np.linalg.norm([1920, 1080])
                         d = np.linalg.norm(p1_center - p2_center) / scale
 

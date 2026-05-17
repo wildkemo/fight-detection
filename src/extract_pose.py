@@ -11,12 +11,17 @@ class RTMPoseInferencer:
     Production-ready RTMPose ONNX inference with aspect-ratio preserving 
     preprocessing and vectorized SimCC decoding.
     """
-    def __init__(self, model_path, device='cpu'):
+    def __init__(self, model_path, device='cpu', num_threads=4):
         providers = ['CPUExecutionProvider']
         if device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
             providers = ['CUDAExecutionProvider']
         
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        # Performance tuning for CPU
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = num_threads
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        
+        self.session = ort.InferenceSession(model_path, sess_options, providers=providers)
         
         # Get model metadata
         self.input_name = self.session.get_inputs()[0].name
@@ -215,10 +220,6 @@ def process_video_poses(video_path, track_data, inferencer, output_path, conf_th
                     tid = meta['tid']
                     kpts_full = restore_coords(kpts_local, meta['inv_trans'])
                     
-                    # 1. Coordinate Normalization (Relative to frame size [0, 1])
-                    kpts_full[:, 0] /= img_w
-                    kpts_full[:, 1] /= img_h
-                    
                     # 2. Temporal Smoothing & Low-Confidence Handling
                     if tid not in prev_smoothed_kpts:
                         prev_smoothed_kpts[tid] = kpts_full.copy()
@@ -242,12 +243,10 @@ def process_video_poses(video_path, track_data, inferencer, output_path, conf_th
                         
                         prev_smoothed_kpts[tid] = smoothed_kpts.copy()
                     
-                    # 3. Final Clamping & Formatting [17, 3]
+                    # 3. Final Formatting [17, 3]
                     final_kpts = []
                     for x, y, conf in smoothed_kpts:
-                        cx = float(np.clip(x, 0, 1))
-                        cy = float(np.clip(y, 0, 1))
-                        final_kpts.append([cx, cy, float(conf)])
+                        final_kpts.append([float(x), float(y), float(conf)])
                     
                     pose_results[tid].append({
                         "frame_idx": curr_idx,

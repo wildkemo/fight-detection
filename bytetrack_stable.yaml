@@ -2,9 +2,9 @@
 # Robust ByteTrack tracker config (Optimized for CCTV Interactions @ 12 FPS)
 
 tracker_type: bytetrack
-track_high_thresh: 0.5  # High bar to ensure clean human detections
+track_high_thresh: 0.35 # Lower bar to keep tracks during blur/occlusion
 track_low_thresh: 0.1   # Keep tracks alive during heavy occlusion
-new_track_thresh: 0.6   # Prevents ID swaps from noise
-track_buffer: 120       # 10 seconds memory (crucial for grappling/prolonged interactions)
-match_thresh: 0.65      # Most relaxed to handle extreme motion at low FPS
+new_track_thresh: 0.45  # Allows faster initialization
+track_buffer: 120       # 10 seconds memory
+match_thresh: 0.8       # More inclusive of large motion between frames
 fuse_score: True
