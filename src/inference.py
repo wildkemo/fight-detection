@@ -45,13 +45,18 @@ class FastStreamGrabber:
         self.stopped = False
         self.frame_idx = 0
 
-        self.ret, self.frame = self.cap.read()
+        self.ret, frame = self.cap.read()
+        if self.ret:
+            self.frame = cv2.resize(frame, (1280, 720))
+        
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
 
     def _update(self):
         while not self.stopped:
             ret, frame = self.cap.read()
+            if ret:
+                frame = cv2.resize(frame, (1280, 720))
             with self.lock:
                 self.ret = ret
                 if ret:
@@ -60,10 +65,10 @@ class FastStreamGrabber:
             if not ret:
                 time.sleep(0.01)
 
-    def read(self):
+    def read(self, last_idx=-1):
         with self.lock:
-            if self.frame is None:
-                return False, None, 0
+            if self.frame is None or self.frame_idx <= last_idx:
+                return self.ret, None, self.frame_idx
             return self.ret, self.frame.copy(), self.frame_idx
 
     def stop(self):
@@ -142,14 +147,14 @@ class InferencePipeline:
         self.prev_centers = {}
         self.pose_memory = {}
         self.pair_buffers = {}
-        self.pair_last_seen = {}
+        self.last_seen = {}
 
         # tuning
         self.proximity = args.proximity
         self.alpha = 0.45     
         self.stride = 4       
         self.threshold = 0.55 
-        self.process_every = 1 # FIX: Always process every frame for 12 FPS smoothness
+        self.process_every = 1 
         self.max_pose = args.max_pose_people
 
         # Dashboard states
@@ -161,6 +166,22 @@ class InferencePipeline:
         self.max_conf = 0.0
         self.fps_history = deque(maxlen=60)
         self.last_time = time.time()
+        self.frame_count = 0
+
+    def _cleanup_state(self, current_ids, max_age_frames=100):
+        self.frame_count += 1
+        for tid in current_ids:
+            self.last_seen[tid] = self.frame_count
+        
+        if self.frame_count % 30 == 0: # Periodic cleanup
+            to_remove = [tid for tid, last_f in self.last_seen.items() if self.frame_count - last_f > max_age_frames]
+            for tid in to_remove:
+                self.prev_centers.pop(tid, None)
+                self.pose_memory.pop(tid, None)
+                self.last_seen.pop(tid, None)
+                pids_to_remove = [pid for pid in self.pair_buffers if tid in pid]
+                for pid in pids_to_remove:
+                    self.pair_buffers.pop(pid, None)
 
     def parse_source(self, source):
         if isinstance(source, str) and source.isdigit():
@@ -198,6 +219,8 @@ class InferencePipeline:
                 else: 
                     self.prev_centers[tid] = 0.6 * c + 0.4 * self.prev_centers[tid]
                 centers[tid] = self.prev_centers[tid]
+
+        self._cleanup_state(tids)
 
         pairs = []
         marked = set()
@@ -279,9 +302,17 @@ class InferencePipeline:
 
         cv2.namedWindow("Fight Detection Dashboard", cv2.WINDOW_NORMAL)
         
+        last_idx = -1
         while True:
-            ret, frame, frame_idx = stream.read()
-            if not ret: continue
+            ret, frame, frame_idx = stream.read(last_idx)
+            
+            if frame is None:
+                if not ret and frame_idx > 0: # Stream ended
+                    break
+                time.sleep(0.005) # Prevent busy-wait
+                continue
+
+            last_idx = frame_idx
 
             # Proper Loop FPS
             curr_time = time.time()
@@ -289,8 +320,6 @@ class InferencePipeline:
             self.last_time = curr_time
             if dt > 0: self.fps_history.append(1.0 / dt)
             avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 0
-
-            frame = cv2.resize(frame, (1280, 720))
             
             # FIX: No frame skipping allowed for 12 FPS streams
             alert = self.step(frame, frame_idx)
@@ -299,6 +328,7 @@ class InferencePipeline:
             canvas = np.zeros((800, 1600, 3), dtype=np.uint8); canvas[:] = COLOR_BG
             video_area = canvas[40:760, 40:1320]; preview = frame.copy()
 
+            # Burn Overlays into Preview (and thus the Recording)
             for tid, box in self.last_bboxes.items():
                 x1, y1, x2, y2 = box.astype(int)
                 color = COLOR_TRACK if not alert else COLOR_ALERT
@@ -309,20 +339,39 @@ class InferencePipeline:
             for tid, kpts in self.last_kpts.items():
                 self.draw_skeleton(preview, kpts, 1280, 720)
 
+            if alert:
+                # Add persistent alert banner to the video frame itself
+                cv2.rectangle(preview, (0, 0), (1280, 45), COLOR_ALERT, -1)
+                cv2.putText(preview, f"!!! VIOLENCE DETECTED ({self.max_conf*100:.1f}%) !!!", 
+                            (15, 33), cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
+
             video_area[:] = preview
 
             # Insights Panel
             panel_x = 1340
             cv2.rectangle(canvas, (panel_x, 40), (1560, 760), COLOR_PANEL, -1)
-            cv2.putText(canvas, "SYSTEM ANALYTICS", (panel_x+10, 75), cv2.FONT_HERSHEY_DUPLEX, 0.6, COLOR_ACCENT, 1)
+            cv2.putText(canvas, "ACTIVITY MONITOR", (panel_x+10, 75), cv2.FONT_HERSHEY_DUPLEX, 0.6, COLOR_ACCENT, 1)
+
+            # Dynamic Status Logic
+            num_persons = len(self.last_bboxes)
+            num_pairs = len(self.last_probs)
+            
+            if alert:
+                status_str, status_col = "!!! VIOLENCE !!!", COLOR_ALERT
+            elif num_pairs > 0:
+                status_str, status_col = "ANALYZING PAIRS", COLOR_INFO
+            elif num_persons > 0:
+                status_str, status_col = "MONITORING", COLOR_ACCENT
+            else:
+                status_str, status_col = "IDLE (NO PEOPLE)", (120, 120, 120)
 
             y_off = 130
             stats = [
-                ("System Status", "MONITORING" if not alert else "ALERT", COLOR_ACCENT if not alert else COLOR_ALERT),
-                ("Processing FPS", f"{avg_fps:.1f}", COLOR_INFO),
-                ("Native Source FPS", f"{stream.native_fps:.1f}", COLOR_TEXT),
-                ("Frame Index", f"{frame_idx}", COLOR_TEXT),
-                ("Fight Confidence", f"{self.max_conf*100:.1f}%", COLOR_ALERT if self.max_conf > self.threshold else COLOR_TEXT),
+                ("System State", status_str, status_col),
+                ("Active Persons", f"{num_persons}", COLOR_TEXT),
+                ("Interactions", f"{num_pairs} active", COLOR_INFO if num_pairs > 0 else COLOR_TEXT),
+                ("Inference Speed", f"{avg_fps:.1f} FPS", COLOR_INFO),
+                ("Peak Confidence", f"{self.max_conf*100:.1f}%", COLOR_ALERT if self.max_conf > self.threshold else COLOR_TEXT),
             ]
 
             for label, val, col in stats:
@@ -330,28 +379,29 @@ class InferencePipeline:
                 cv2.putText(canvas, val, (panel_x+15, y_off+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
                 y_off += 70
 
-            # Pair Analysis
-            cv2.putText(canvas, "PAIR PROBABILITIES", (panel_x+10, y_off+20), cv2.FONT_HERSHEY_DUPLEX, 0.5, COLOR_ACCENT, 1)
-            y_off += 50
-            for pair, prob in self.last_probs.items():
-                p_col = COLOR_ALERT if prob > self.threshold else COLOR_ACCENT
-                cv2.putText(canvas, f"Pair {pair}", (panel_x+15, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
-                cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+195, y_off+25), (50, 50, 50), -1)
-                cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+15+int(180*prob), y_off+25), p_col, -1)
-                cv2.putText(canvas, f"{prob:.2f}", (panel_x+200, y_off+23), cv2.FONT_HERSHEY_SIMPLEX, 0.5, p_col, 1)
+            # Pair Analysis (Simplified)
+            if num_pairs > 0:
+                cv2.putText(canvas, "INTERACTION PROBS", (panel_x+10, y_off+20), cv2.FONT_HERSHEY_DUPLEX, 0.5, COLOR_ACCENT, 1)
                 y_off += 50
+                for pair, prob in sorted(self.last_probs.items(), key=lambda x: x[1], reverse=True)[:5]:
+                    p_col = COLOR_ALERT if prob > self.threshold else COLOR_ACCENT
+                    cv2.putText(canvas, f"IDs {pair[0]}+{pair[1]}", (panel_x+15, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+                    cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+175, y_off+22), (50, 50, 50), -1)
+                    cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+15+int(160*prob), y_off+22), p_col, -1)
+                    cv2.putText(canvas, f"{prob:.2f}", (panel_x+180, y_off+21), cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_col, 1)
+                    y_off += 45
 
             if rec.active:
                 cv2.circle(canvas, (panel_x+30, 730), 8, COLOR_ALERT, -1)
                 cv2.putText(canvas, "REC ACTIVE", (panel_x+50, 737), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_ALERT, 2)
 
-            # Alert Header
+            # Top Dashboard Header (Global Status)
             header_col = COLOR_ALERT if alert else COLOR_PANEL
             cv2.rectangle(canvas, (40, 0), (1320, 35), header_col, -1)
-            status_text = f"!!! VIOLENCE DETECTED ({self.max_conf*100:.1f}%) !!!" if alert else "SECURITY FEED STABLE"
+            status_text = f"SYSTEM ALERT: VIOLENCE DETECTED" if alert else "SECURITY FEED STABLE"
             cv2.putText(canvas, status_text, (50, 25), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1)
 
-            rec.update(frame, alert)
+            rec.update(preview, alert)
             cv2.imshow("Fight Detection Dashboard", canvas)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
