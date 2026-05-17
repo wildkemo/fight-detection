@@ -1,10 +1,16 @@
 import os
+import sys
 import cv2
 import json
 import argparse
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
+
 from ultralytics import YOLO
+from preprocessing.pipeline import FramePreprocessor
 
 # Constants for track quality and stability
 MIN_TRACK_LENGTH = 12
@@ -24,6 +30,8 @@ def process_video_directory(video_dir, output_dir, model, tracker_config, limit=
     if limit:
         video_files = video_files[:limit]
         print(f"Limiting to first {limit} videos in {video_dir}")
+
+    preprocessor = FramePreprocessor()
 
     for video_file in tqdm(video_files, desc=f"Processing {os.path.basename(video_dir)}"):
         video_path = os.path.join(video_dir, video_file)
@@ -54,6 +62,9 @@ def process_video_directory(video_dir, output_dir, model, tracker_config, limit=
             if frame is None:
                 frame_idx += 1
                 continue
+
+            # Apply Preprocessing
+            frame = preprocessor.process_frame(frame)
 
             # Run YOLOv8 tracking with persist=True always
             results = model.track(

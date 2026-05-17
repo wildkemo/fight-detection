@@ -1,10 +1,16 @@
 import os
+import sys
 import cv2
 import json
 import argparse
 import numpy as np
 import onnxruntime as ort
 from tqdm import tqdm
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
+
+from preprocessing.pipeline import FramePreprocessor
 
 class RTMPoseInferencer:
     """
@@ -170,6 +176,9 @@ def process_video_poses(video_path, track_data, inferencer, output_path, conf_th
     if not cap.isOpened():
         return
 
+    # Use default 640x640 to match detect_and_track.py
+    preprocessor = FramePreprocessor()
+
     img_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     img_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
@@ -198,6 +207,9 @@ def process_video_poses(video_path, track_data, inferencer, output_path, conf_th
         ret, frame = cap.read()
         if not ret:
             break
+        
+        # Apply Preprocessing (Must match Stage 1)
+        frame = preprocessor.process_frame(frame)
         
         if curr_idx in frame_map:
             targets = frame_map[curr_idx]
