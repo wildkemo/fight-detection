@@ -1,739 +1,372 @@
-"""
-inference.py
-
-Real-time Fight Detection System
-
-Pipeline:
-Frame
-    -> YOLOv8 Detection + ByteTrack
-    -> Pairwise Proximity Filtering
-    -> RTMPose ONNX Pose Estimation
-    -> Temporal Pose Smoothing
-    -> Feature Extraction
-    -> 36-frame Sequence Building
-    -> TCN TFLite Inference
-    -> Temporal Decision Smoothing
-    -> Fight Alert
-
-Architecture matches the training pipeline exactly.
-
-Author: Taher
-"""
-
 import os
+import sys
 import cv2
-import math
+import numpy as np
 import time
 import argparse
-import numpy as np
-import tensorflow as tf
-import onnxruntime as ort
+import threading
+from collections import deque
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
 
 from ultralytics import YOLO
-from collections import defaultdict, deque
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-SEQUENCE_LENGTH = 36
-
-CONF_THRESH = 0.3
-POSE_SMOOTH_ALPHA = 0.7
-
-PAIR_DISTANCE_THRESHOLD = 0.15
-
-TEMPORAL_WINDOW = 10
-FIGHT_THRESHOLD = 0.72
-TRIGGER_COUNT = 6
-
-DISPLAY = True
-
-# ============================================================
-# FEATURE EXTRACTOR
-# ============================================================
-
-
-class FeatureExtractor:
-
-    def __init__(self, sequence_length=36):
-
-        self.seq_len = sequence_length
-
-        self.NOSE = 0
-        self.LEFT_SHOULDER = 5
-        self.RIGHT_SHOULDER = 6
-        self.WRIST_L = 9
-        self.WRIST_R = 10
-        self.LEFT_HIP = 11
-        self.RIGHT_HIP = 12
-
-        self.TORSO_JOINTS = [5, 6, 11, 12]
-
-    def normalize_skeletons(self, kpts_A, kpts_B):
-
-        pelvis_A = (
-            kpts_A[:, self.LEFT_HIP, :2]
-            + kpts_A[:, self.RIGHT_HIP, :2]
-        ) / 2.0
-
-        pelvis_B = (
-            kpts_B[:, self.LEFT_HIP, :2]
-            + kpts_B[:, self.RIGHT_HIP, :2]
-        ) / 2.0
-
-        midpoint = (pelvis_A + pelvis_B) / 2.0
-        mid = midpoint[:, None, :]
-
-        norm_A = kpts_A[:, :, :2] - mid
-        norm_B = kpts_B[:, :, :2] - mid
-
-        def get_scale(kpts):
-
-            coords = kpts[:, self.TORSO_JOINTS, :2]
-            weights = kpts[:, self.TORSO_JOINTS, 2:3]
-
-            torso_mean = np.sum(
-                coords * weights,
-                axis=1,
-                keepdims=True
-            ) / (np.sum(weights, axis=1, keepdims=True) + 1e-6)
-
-            dist = np.sqrt(
-                np.sum((coords - torso_mean) ** 2, axis=2)
-            )
-
-            return np.mean(dist, axis=1) + 1e-6
-
-        scale_A = get_scale(kpts_A)
-        scale_B = get_scale(kpts_B)
-
-        scale = np.maximum(scale_A, scale_B)[:, None, None]
-
-        return norm_A / scale, norm_B / scale
-
-    def compute_motion(self, kpts):
-
-        vel = np.diff(kpts, axis=0, prepend=kpts[:1])
-        energy = np.sum(vel ** 2, axis=(1, 2))[:, None]
-
-        return vel, energy
-
-    def compute_interaction(self, norm_A, norm_B, vel_A, vel_B):
-
-        pelvis_A = (
-            norm_A[:, self.LEFT_HIP]
-            + norm_A[:, self.RIGHT_HIP]
-        ) / 2.0
-
-        pelvis_B = (
-            norm_B[:, self.LEFT_HIP]
-            + norm_B[:, self.RIGHT_HIP]
-        ) / 2.0
-
-        dist = np.linalg.norm(
-            pelvis_A - pelvis_B,
-            axis=1
-        )[:, None]
-
-        closing = np.diff(
-            dist,
-            axis=0,
-            prepend=dist[:1]
-        )
-
-        rel_vel = vel_A - vel_B
-
-        def j_dist(p1, p2):
-            return np.linalg.norm(p1 - p2, axis=1)[:, None]
-
-        crit = np.concatenate([
-            j_dist(norm_A[:, self.WRIST_L], norm_B[:, self.NOSE]),
-            j_dist(norm_A[:, self.WRIST_R], norm_B[:, self.NOSE]),
-            j_dist(norm_B[:, self.WRIST_L], norm_A[:, self.NOSE]),
-            j_dist(norm_B[:, self.WRIST_R], norm_A[:, self.NOSE]),
-        ], axis=1)
-
-        return dist, closing, rel_vel, crit
-
-    def extract(self, kpts_A, kpts_B):
-
-        A = kpts_A.copy()
-        B = kpts_B.copy()
-
-        A[1:] = (A[1:] + A[:-1]) / 2.0
-        B[1:] = (B[1:] + B[:-1]) / 2.0
-
-        norm_A, norm_B = self.normalize_skeletons(A, B)
-
-        vA, eA = self.compute_motion(norm_A)
-        vB, eB = self.compute_motion(norm_B)
-
-        dist, closing, rel_v, crit = self.compute_interaction(
-            norm_A,
-            norm_B,
-            vA,
-            vB
-        )
-
-        conf_A = kpts_A[:, :, 2]
-        conf_B = kpts_B[:, :, 2]
-
-        features = []
-
-        for i in range(self.seq_len):
-
-            feat = np.concatenate([
-                norm_A[i].flatten(),
-                norm_B[i].flatten(),
-                vA[i].flatten(),
-                vB[i].flatten(),
-                eA[i],
-                eB[i],
-                dist[i],
-                closing[i],
-                rel_v[i].flatten(),
-                crit[i],
-                conf_A[i].flatten(),
-                conf_B[i].flatten()
-            ])
-
-            features.append(feat)
-
-        return np.array(features, dtype=np.float32)
-
-
-# ============================================================
-# RTMPOSE
-# ============================================================
-
-
-class RTMPoseInferencer:
-
-    def __init__(self, model_path):
-
-        self.session = ort.InferenceSession(
-            model_path,
-            providers=["CPUExecutionProvider"]
-        )
-
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_names = [
-            o.name for o in self.session.get_outputs()
-        ]
-
-        shape = self.session.get_inputs()[0].shape
-
-        self.model_h = shape[2]
-        self.model_w = shape[3]
-
-        self.mean = np.array(
-            [123.675, 116.28, 103.53],
-            dtype=np.float32
-        ).reshape(1, 1, 3)
-
-        self.std = np.array(
-            [58.395, 57.12, 57.375],
-            dtype=np.float32
-        ).reshape(1, 1, 3)
-
-    def preprocess(self, frame, bbox):
-
-        x1, y1, x2, y2 = bbox
-
-        crop = frame[int(y1):int(y2), int(x1):int(x2)]
-
-        if crop.size == 0:
-            return None
-
-        crop = cv2.resize(
-            crop,
-            (self.model_w, self.model_h)
-        )
-
-        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-
-        crop = (
-            crop.astype(np.float32) - self.mean
-        ) / self.std
-
-        crop = crop.transpose(2, 0, 1)
-
-        return crop[None]
-
-    def decode(self, outputs):
-
-        simcc_x = outputs[0]
-        simcc_y = outputs[1]
-
-        x = np.argmax(simcc_x, axis=2)
-        y = np.argmax(simcc_y, axis=2)
-
-        x_scores = np.max(simcc_x, axis=2)
-        y_scores = np.max(simcc_y, axis=2)
-
-        scores = (x_scores + y_scores) / 2.0
-
-        results = np.stack([
-            x.astype(np.float32),
-            y.astype(np.float32),
-            scores
-        ], axis=2)
-
-        return results
-
-    def infer(self, frame, bbox):
-
-        x1, y1, x2, y2 = bbox
-
-        inp = self.preprocess(frame, bbox)
-
-        if inp is None:
-            return None
-
-        outputs = self.session.run(
-            self.output_names,
-            {self.input_name: inp}
-        )
-
-        kpts = self.decode(outputs)[0]
-
-        # restore local coords
-        kpts[:, 0] = x1 + (
-            kpts[:, 0] / self.model_w
-        ) * (x2 - x1)
-
-        kpts[:, 1] = y1 + (
-            kpts[:, 1] / self.model_h
-        ) * (y2 - y1)
-
-        h, w = frame.shape[:2]
-
-        kpts[:, 0] /= w
-        kpts[:, 1] /= h
-
-        return kpts
-
-
-# ============================================================
-# TFLITE CLASSIFIER
-# ============================================================
-
-
-class TCNClassifier:
-
-    def __init__(self, model_path):
-
-        self.interpreter = tf.lite.Interpreter(
-            model_path=model_path
-        )
-
+import tensorflow as tf
+
+from extract_pose import RTMPoseInferencer, restore_coords
+from build_sequences import FeatureExtractor
+
+# Colors for the dashboard
+COLOR_BG = (15, 15, 15)
+COLOR_PANEL = (30, 30, 30)
+COLOR_ACCENT = (0, 255, 127)  # Spring Green
+COLOR_ALERT = (0, 0, 255)     # Red
+COLOR_TEXT = (240, 240, 240)
+COLOR_TRACK = (255, 165, 0)   # Orange
+COLOR_INFO = (0, 191, 255)    # Deep Sky Blue
+
+# ---------------- STREAM GRABBER ----------------
+class FastStreamGrabber:
+    def __init__(self, source):
+        self.cap = cv2.VideoCapture(source)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open source: {source}")
+
+        self.native_fps = self.cap.get(cv2.CAP_PROP_FPS) or 12.0
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        self.lock = threading.Lock()
+        self.frame = None
+        self.ret = False
+        self.stopped = False
+        self.frame_idx = 0
+
+        self.ret, self.frame = self.cap.read()
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while not self.stopped:
+            ret, frame = self.cap.read()
+            with self.lock:
+                self.ret = ret
+                if ret:
+                    self.frame = frame
+                    self.frame_idx += 1
+            if not ret:
+                time.sleep(0.01)
+
+    def read(self):
+        with self.lock:
+            if self.frame is None:
+                return False, None, 0
+            return self.ret, self.frame.copy(), self.frame_idx
+
+    def stop(self):
+        self.stopped = True
+        if self.thread.is_alive():
+            self.thread.join(timeout=1)
+        self.cap.release()
+
+# ---------------- RECORDING ----------------
+class RecordingManager:
+    def __init__(self, fps, width, height, output_dir="data/recordings", pre_buffer_sec=2, cooldown_sec=3):
+        self.fps = fps
+        self.width = width
+        self.height = height
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        self.frame_buffer = deque(maxlen=int(fps * pre_buffer_sec))
+        self.cooldown_len = int(fps * cooldown_sec)
+
+        self.writer = None
+        self.cooldown = 0
+        self.active = False
+
+    def update(self, frame, alert):
+        self.frame_buffer.append(frame.copy())
+
+        if alert:
+            self.cooldown = self.cooldown_len
+            if not self.active:
+                self.start()
+
+        if self.active:
+            self.writer.write(frame)
+            if not alert:
+                self.cooldown -= 1
+                if self.cooldown <= 0:
+                    self.stop()
+
+    def start(self):
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(self.output_dir, f"fight_{ts}.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self.writer = cv2.VideoWriter(path, fourcc, self.fps, (self.width, self.height))
+
+        while self.frame_buffer:
+            self.writer.write(self.frame_buffer.popleft())
+
+        self.active = True
+        print(f"[REC] started: {path}")
+
+    def stop(self):
+        if self.writer:
+            self.writer.release()
+        self.writer = None
+        self.active = False
+        print("[REC] stopped")
+
+# ---------------- PIPELINE ----------------
+class InferencePipeline:
+    def __init__(self, args):
+        self.args = args
+
+        print("Loading Models...")
+        self.det_model = YOLO(args.det_model)
+        self.pose_model = RTMPoseInferencer(args.pose_model, device=args.device)
+
+        self.interpreter = tf.lite.Interpreter(model_path=args.tcn_model)
         self.interpreter.allocate_tensors()
+        self.inp = self.interpreter.get_input_details()
+        self.out = self.interpreter.get_output_details()
 
-        self.input_details = (
-            self.interpreter.get_input_details()
-        )
+        self.feature_extractor = FeatureExtractor(sequence_length=36)
 
-        self.output_details = (
-            self.interpreter.get_output_details()
-        )
+        # state
+        self.prev_centers = {}
+        self.pose_memory = {}
+        self.pair_buffers = {}
+        self.pair_last_seen = {}
 
-    def predict(self, sequence):
+        # tuning
+        self.proximity = args.proximity
+        self.alpha = 0.45     
+        self.stride = 4       
+        self.threshold = 0.55 
+        self.process_every = 1 # FIX: Always process every frame for 12 FPS smoothness
+        self.max_pose = args.max_pose_people
 
-        sequence = np.expand_dims(
-            sequence.astype(np.float32),
-            axis=0
-        )
+        # Dashboard states
+        self.fight_votes = deque(maxlen=10)
+        self.last_bboxes = {}
+        self.last_kpts = {}
+        self.last_alert = False
+        self.last_probs = {} 
+        self.max_conf = 0.0
+        self.fps_history = deque(maxlen=60)
+        self.last_time = time.time()
 
-        self.interpreter.set_tensor(
-            self.input_details[0]["index"],
-            sequence
-        )
+    def parse_source(self, source):
+        if isinstance(source, str) and source.isdigit():
+            return int(source)
+        return source
 
-        self.interpreter.invoke()
+    def draw_skeleton(self, frame, kpts, width, height):
+        edges = [(15, 13), (13, 11), (16, 14), (14, 12), (11, 12), (5, 11), (6, 12), (5, 6), (5, 7), (6, 8), (7, 9), (8, 10)]
+        for e in edges:
+            p1 = kpts[e[0]]; p2 = kpts[e[1]]
+            if p1[2] > 0.3 and p2[2] > 0.3:
+                cv2.line(frame, (int(p1[0]*width), int(p1[1]*height)), (int(p2[0]*width), int(p2[1]*height)), (0, 255, 255), 2)
+        for p in kpts:
+            if p[2] > 0.3:
+                cv2.circle(frame, (int(p[0]*width), int(p[1]*height)), 4, (255, 0, 255), -1)
 
-        output = self.interpreter.get_tensor(
-            self.output_details[0]["index"]
-        )
+    def step(self, frame, idx):
+        h, w = frame.shape[:2]
+        results = self.det_model.track(frame, persist=True, classes=[0], tracker=self.args.tracker, 
+                                      conf=0.4, iou=0.5, imgsz=512, max_det=20, verbose=False)
 
-        return float(output[0][0])
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-
-def bbox_center(box):
-
-    x1, y1, x2, y2 = box
-
-    return np.array([
-        (x1 + x2) / 2,
-        (y1 + y2) / 2
-    ])
-
-
-def pair_distance(boxA, boxB, frame_shape):
-
-    h, w = frame_shape[:2]
-
-    scale = np.linalg.norm([w, h])
-
-    return np.linalg.norm(
-        bbox_center(boxA) - bbox_center(boxB)
-    ) / scale
-
-
-def temporal_decision(history):
-
-    high = [x for x in history if x >= FIGHT_THRESHOLD]
-
-    return len(high) >= TRIGGER_COUNT
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-
-def run_inference(args):
-
-    detector = YOLO(args.yolo)
-
-    pose_model = RTMPoseInferencer(args.rtmpose)
-
-    classifier = TCNClassifier(args.tcn)
-
-    extractor = FeatureExtractor()
-
-    cap = cv2.VideoCapture(args.source)
-
-    pair_memory = defaultdict(lambda: {
-        "A": deque(maxlen=SEQUENCE_LENGTH),
-        "B": deque(maxlen=SEQUENCE_LENGTH),
-        "scores": deque(maxlen=TEMPORAL_WINDOW),
-        "fight": False,
-        "last_seen": 0,
-        "prob": 0.0
-    })
-
-    pose_memory = {}
-
-    frame_idx = 0
-    prev_time = time.time()
-
-    while True:
-
-        ret, frame = cap.read()
-
-        if not ret:
-            break
-
-        # ====================================================
-        # DETECTION + TRACKING
-        # ====================================================
-
-        results = detector.track(
-            source=frame,
-            persist=True,
-            classes=[0],
-            tracker=args.tracker,
-            conf=args.conf,
-            verbose=False
-        )
-
-        people = []
+        tids = []
+        boxes = {}
+        centers = {}
 
         if results[0].boxes.id is not None:
-
-            boxes = results[0].boxes.xyxy.cpu().numpy()
             ids = results[0].boxes.id.cpu().numpy().astype(int)
-
-            for box, tid in zip(boxes, ids):
-
-                people.append({
-                    "id": tid,
-                    "bbox": box
-                })
-
-        # ====================================================
-        # INTERACTION FILTERING
-        # ====================================================
-
-        valid_pairs = []
-
-        for i in range(len(people)):
-
-            for j in range(i + 1, len(people)):
-
-                p1 = people[i]
-                p2 = people[j]
-
-                dist = pair_distance(
-                    p1["bbox"],
-                    p2["bbox"],
-                    frame.shape
-                )
-
-                if dist < PAIR_DISTANCE_THRESHOLD:
-
-                    pair_id = tuple(
-                        sorted([p1["id"], p2["id"]])
-                    )
-
-                    valid_pairs.append(
-                        (pair_id, p1, p2)
-                    )
-
-        # ====================================================
-        # POSE
-        # ====================================================
-
-        current_poses = {}
-
-        needed_ids = set()
-
-        for _, p1, p2 in valid_pairs:
-
-            needed_ids.add(p1["id"])
-            needed_ids.add(p2["id"])
-
-        for p in people:
-
-            tid = p["id"]
-
-            if tid not in needed_ids:
-                continue
-
-            kpts = pose_model.infer(
-                frame,
-                p["bbox"]
-            )
-
-            if kpts is None:
-                continue
-
-            if tid in pose_memory:
-
-                prev = pose_memory[tid]
-
-                smoothed = kpts.copy()
-
-                for j in range(len(kpts)):
-
-                    x, y, c = kpts[j]
-                    px, py, _ = prev[j]
-
-                    if c < CONF_THRESH:
-
-                        smoothed[j, 0] = px
-                        smoothed[j, 1] = py
-
-                    else:
-
-                        smoothed[j, 0] = (
-                            POSE_SMOOTH_ALPHA * x
-                            + (1 - POSE_SMOOTH_ALPHA) * px
-                        )
-
-                        smoothed[j, 1] = (
-                            POSE_SMOOTH_ALPHA * y
-                            + (1 - POSE_SMOOTH_ALPHA) * py
-                        )
-
-                kpts = smoothed
-
-            pose_memory[tid] = kpts.copy()
-
-            current_poses[tid] = kpts
-
-        # ====================================================
-        # BUILD PAIR SEQUENCES
-        # ====================================================
-
-        for pair_id, p1, p2 in valid_pairs:
-
-            idA, idB = pair_id
-
-            if idA not in current_poses:
-                continue
-
-            if idB not in current_poses:
-                continue
-
-            kpts_A = current_poses[idA]
-            kpts_B = current_poses[idB]
-
-            mem = pair_memory[pair_id]
-
-            mem["A"].append(kpts_A)
-            mem["B"].append(kpts_B)
-
-            mem["last_seen"] = frame_idx
-
-            # ================================================
-            # INFERENCE
-            # ================================================
-
-            if len(mem["A"]) == SEQUENCE_LENGTH:
-
-                seq_A = np.array(mem["A"])
-                seq_B = np.array(mem["B"])
-
-                features = extractor.extract(
-                    seq_A,
-                    seq_B
-                )
-
-                prob = classifier.predict(features)
-
-                mem["prob"] = prob
-
-                mem["scores"].append(prob)
-
-                mem["fight"] = temporal_decision(
-                    mem["scores"]
-                )
-
-        # ====================================================
-        # CLEAN OLD PAIRS
-        # ====================================================
-
-        stale = []
-
-        for pair_id, mem in pair_memory.items():
-
-            if frame_idx - mem["last_seen"] > 20:
-                stale.append(pair_id)
-
-        for s in stale:
-            del pair_memory[s]
-
-        # ====================================================
-        # VISUALIZATION
-        # ====================================================
-
-        for pair_id, mem in pair_memory.items():
-
-            if not mem["fight"]:
-                continue
-
-            idA, idB = pair_id
-
-            for p in people:
-
-                if p["id"] in [idA, idB]:
-
-                    x1, y1, x2, y2 = map(
-                        int,
-                        p["bbox"]
-                    )
-
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1),
-                        (x2, y2),
-                        (0, 0, 255),
-                        3
-                    )
-
-                    cv2.putText(
-                        frame,
-                        f"FIGHT {mem['prob']:.2f}",
-                        (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 0, 255),
-                        2
-                    )
-
-        # ====================================================
-        # FPS
-        # ====================================================
-
-        current = time.time()
-
-        fps = 1.0 / (current - prev_time)
-
-        prev_time = current
-
-        cv2.putText(
-            frame,
-            f"FPS: {fps:.2f}",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255, 255, 255),
-            2
-        )
-
-        # ====================================================
-        # DISPLAY
-        # ====================================================
-
-        if DISPLAY:
-
-            cv2.imshow(
-                "Fight Detection",
-                frame
-            )
-
-            key = cv2.waitKey(1)
-
-            if key == 27:
-                break
-
-        frame_idx += 1
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-# ============================================================
-# ENTRY
-# ============================================================
+            bxs = results[0].boxes.xyxy.cpu().numpy()
+
+            for tid, box in zip(ids, bxs):
+                tids.append(tid)
+                boxes[tid] = box
+                c = np.array([(box[0]+box[2])/2/w, (box[1]+box[3])/2/h])
+                if tid not in self.prev_centers: self.prev_centers[tid] = c
+                else: 
+                    self.prev_centers[tid] = 0.6 * c + 0.4 * self.prev_centers[tid]
+                centers[tid] = self.prev_centers[tid]
+
+        pairs = []
+        marked = set()
+        for i in range(len(tids)):
+            for j in range(i+1, len(tids)):
+                a, b = sorted([tids[i], tids[j]])
+                
+                dist = np.linalg.norm(centers[a] - centers[b])
+                if dist < self.proximity or dist < 0.35:
+                    pairs.append((a, b)); marked.add(a); marked.add(b)
+
+        marked = list(marked)[:self.max_pose]
+        kpts_now = {}
+        if marked:
+            crops, meta = [], []
+            for tid in marked:
+                if tid not in boxes: continue
+                c, _, inv = self.pose_model.preprocess(frame, boxes[tid])
+                crops.append(c); meta.append((tid, inv))
+            if crops:
+                out = self.pose_model.infer_batch(crops)
+                for k, (tid, inv) in zip(out, meta):
+                    k = restore_coords(k, inv); k[:, 0] /= w; k[:, 1] /= h
+                    
+                    if tid in self.pose_memory:
+                        prev = self.pose_memory[tid]["kpts"]
+                        smoothed = k.copy()
+                        for j in range(17):
+                            if k[j, 2] < 0.2: smoothed[j, :2] = prev[j, :2]
+                            else: smoothed[j, :2] = 0.6 * k[j, :2] + 0.4 * prev[j, :2]
+                        k = smoothed
+
+                    kpts_now[tid] = k; self.pose_memory[tid] = {"kpts": k, "age": 0}
+
+        alert_raw = False
+        new_probs = {}
+        max_p = 0.0
+        for a, b in pairs:
+            k1 = kpts_now.get(a)
+            if k1 is None: k1 = self.pose_memory.get(a, {}).get("kpts")
+            k2 = kpts_now.get(b)
+            if k2 is None: k2 = self.pose_memory.get(b, {}).get("kpts")
+            if k1 is None or k2 is None: continue
+
+            motion = np.mean(np.linalg.norm(k1[:, :2] - k2[:, :2], axis=1))
+            if motion < 0.01: continue
+
+            pid = (a, b)
+            if pid not in self.pair_buffers:
+                self.pair_buffers[pid] = {"A": deque(maxlen=36), "B": deque(maxlen=36), "P": deque(maxlen=8)}
+
+            buf = self.pair_buffers[pid]
+            buf["A"].append(k1); buf["B"].append(k2)
+
+            if len(buf["A"]) == 36 and idx % self.stride == 0:
+                f = self.feature_extractor.extract(np.array(buf["A"]), np.array(buf["B"]))
+                self.interpreter.set_tensor(self.inp[0]["index"], f[np.newaxis, ...].astype(np.float32))
+                self.interpreter.invoke()
+                prob = self.interpreter.get_tensor(self.out[0]["index"])[0][0]
+                buf["P"].append(prob)
+
+            if buf["P"]:
+                avg_p = np.mean(buf["P"])
+                new_probs[pid] = avg_p
+                max_p = max(max_p, avg_p)
+                if avg_p > self.threshold: alert_raw = True
+
+        self.fight_votes.append(alert_raw)
+        alert = sum(self.fight_votes) >= 5
+
+        self.last_bboxes = boxes; self.last_kpts = kpts_now; self.last_alert = alert
+        self.last_probs = new_probs; self.max_conf = max_p
+        return alert
+
+    def run(self, source):
+        source = self.parse_source(source)
+        stream = FastStreamGrabber(source)
+        rec = RecordingManager(stream.native_fps, 1280, 720)
+
+        cv2.namedWindow("Fight Detection Dashboard", cv2.WINDOW_NORMAL)
+        
+        while True:
+            ret, frame, frame_idx = stream.read()
+            if not ret: continue
+
+            # Proper Loop FPS
+            curr_time = time.time()
+            dt = curr_time - self.last_time
+            self.last_time = curr_time
+            if dt > 0: self.fps_history.append(1.0 / dt)
+            avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 0
+
+            frame = cv2.resize(frame, (1280, 720))
+            
+            # FIX: No frame skipping allowed for 12 FPS streams
+            alert = self.step(frame, frame_idx)
+
+            # Canvas Construction
+            canvas = np.zeros((800, 1600, 3), dtype=np.uint8); canvas[:] = COLOR_BG
+            video_area = canvas[40:760, 40:1320]; preview = frame.copy()
+
+            for tid, box in self.last_bboxes.items():
+                x1, y1, x2, y2 = box.astype(int)
+                color = COLOR_TRACK if not alert else COLOR_ALERT
+                cv2.rectangle(preview, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(preview, (x1, y1-25), (x1+60, y1), color, -1)
+                cv2.putText(preview, f"ID {tid}", (x1+5, y1-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+
+            for tid, kpts in self.last_kpts.items():
+                self.draw_skeleton(preview, kpts, 1280, 720)
+
+            video_area[:] = preview
+
+            # Insights Panel
+            panel_x = 1340
+            cv2.rectangle(canvas, (panel_x, 40), (1560, 760), COLOR_PANEL, -1)
+            cv2.putText(canvas, "SYSTEM ANALYTICS", (panel_x+10, 75), cv2.FONT_HERSHEY_DUPLEX, 0.6, COLOR_ACCENT, 1)
+
+            y_off = 130
+            stats = [
+                ("System Status", "MONITORING" if not alert else "ALERT", COLOR_ACCENT if not alert else COLOR_ALERT),
+                ("Processing FPS", f"{avg_fps:.1f}", COLOR_INFO),
+                ("Native Source FPS", f"{stream.native_fps:.1f}", COLOR_TEXT),
+                ("Frame Index", f"{frame_idx}", COLOR_TEXT),
+                ("Fight Confidence", f"{self.max_conf*100:.1f}%", COLOR_ALERT if self.max_conf > self.threshold else COLOR_TEXT),
+            ]
+
+            for label, val, col in stats:
+                cv2.putText(canvas, label, (panel_x+15, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+                cv2.putText(canvas, val, (panel_x+15, y_off+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
+                y_off += 70
+
+            # Pair Analysis
+            cv2.putText(canvas, "PAIR PROBABILITIES", (panel_x+10, y_off+20), cv2.FONT_HERSHEY_DUPLEX, 0.5, COLOR_ACCENT, 1)
+            y_off += 50
+            for pair, prob in self.last_probs.items():
+                p_col = COLOR_ALERT if prob > self.threshold else COLOR_ACCENT
+                cv2.putText(canvas, f"Pair {pair}", (panel_x+15, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+                cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+195, y_off+25), (50, 50, 50), -1)
+                cv2.rectangle(canvas, (panel_x+15, y_off+10), (panel_x+15+int(180*prob), y_off+25), p_col, -1)
+                cv2.putText(canvas, f"{prob:.2f}", (panel_x+200, y_off+23), cv2.FONT_HERSHEY_SIMPLEX, 0.5, p_col, 1)
+                y_off += 50
+
+            if rec.active:
+                cv2.circle(canvas, (panel_x+30, 730), 8, COLOR_ALERT, -1)
+                cv2.putText(canvas, "REC ACTIVE", (panel_x+50, 737), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_ALERT, 2)
+
+            # Alert Header
+            header_col = COLOR_ALERT if alert else COLOR_PANEL
+            cv2.rectangle(canvas, (40, 0), (1320, 35), header_col, -1)
+            status_text = f"!!! VIOLENCE DETECTED ({self.max_conf*100:.1f}%) !!!" if alert else "SECURITY FEED STABLE"
+            cv2.putText(canvas, status_text, (50, 25), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1)
+
+            rec.update(frame, alert)
+            cv2.imshow("Fight Detection Dashboard", canvas)
+            if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+        stream.stop(); rec.stop(); cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--source",
-        type=str,
-        default=0
-    )
-
-    parser.add_argument(
-        "--yolo",
-        type=str,
-        default="models/yolov8n.pt"
-    )
-
-    parser.add_argument(
-        "--rtmpose",
-        type=str,
-        default="models/rtmpose.onnx"
-    )
-
-    parser.add_argument(
-        "--tcn",
-        type=str,
-        default="models/tcn_model.tflite"
-    )
-
-    parser.add_argument(
-        "--tracker",
-        type=str,
-        default="bytetrack.yaml"
-    )
-
-    parser.add_argument(
-        "--conf",
-        type=float,
-        default=0.3
-    )
-
-    args = parser.parse_args()
-
-    run_inference(args)
+    p = argparse.ArgumentParser()
+    p.add_argument("--source", required=True)
+    p.add_argument("--det_model", default="models/yolov8n.pt")
+    p.add_argument("--pose_model", default="models/rtmpose-s-c54166.onnx")
+    p.add_argument("--tcn_model", default="models/tcn_model.tflite")
+    p.add_argument("--tracker", default="bytetrack_stable.yaml")
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--proximity", type=float, default=0.45)
+    p.add_argument("--process_every", type=int, default=1) # Set to 1 for smoothness
+    p.add_argument("--max_pose_people", type=int, default=2)
+    args = p.parse_args()
+    InferencePipeline(args).run(args.source)

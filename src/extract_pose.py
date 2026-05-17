@@ -94,26 +94,33 @@ class RTMPoseInferencer:
 
     def decode_simcc(self, outputs):
         """
-        Vectorized SimCC decoding. 
-        Note: Scaling to model space is skipped here as inverse affine handles it.
+        Vectorized SimCC decoding with automatic coordinate scaling.
+        Handles models where SimCC output resolution is a multiple of input resolution.
         """
-        simcc_x, simcc_y = outputs[0], outputs[1]
+        # RTMPose models usually have simcc_x and simcc_y as separate outputs.
+        # We identify them by matching their lengths to model width/height.
+        o1, o2 = outputs[0], outputs[1]
         
+        # Check which output matches which axis (robust to output order)
+        if abs(o1.shape[2] / self.model_w - 2.0) < 0.1 or o1.shape[2] == self.model_w:
+            simcc_x, simcc_y = o1, o2
+        else:
+            simcc_x, simcc_y = o2, o1
+
         # Vectorized argmax and max
         x_indices = np.argmax(simcc_x, axis=2)  # [batch, 17]
         y_indices = np.argmax(simcc_y, axis=2)  # [batch, 17]
         
         x_scores = np.max(simcc_x, axis=2)
         y_scores = np.max(simcc_y, axis=2)
-        scores = (x_scores + y_scores) / 2.0  # [batch, 17]
+        scores = (x_scores + y_scores) / 2.0
         
-        # Map indices directly (already aligned to affine space)
-        x = x_indices.astype(np.float32)
-        y = y_indices.astype(np.float32)
+        # Scale indices to model pixels
+        # (SimCC length is typically model_res * 2)
+        x = x_indices.astype(np.float32) / (simcc_x.shape[2] / self.model_w)
+        y = y_indices.astype(np.float32) / (simcc_y.shape[2] / self.model_h)
         
-        # Stack into [batch, 17, 3]
-        results = np.stack([x, y, scores], axis=2)
-        return results
+        return np.stack([x, y, scores], axis=2)
 
     def infer_batch(self, batch_crops):
         """Runs inference on a batch of normalized crops."""

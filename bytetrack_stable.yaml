@@ -1,0 +1,10 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# Robust ByteTrack tracker config (Optimized for CCTV Interactions @ 12 FPS)
+
+tracker_type: bytetrack
+track_high_thresh: 0.5  # High bar to ensure clean human detections
+track_low_thresh: 0.1   # Keep tracks alive during heavy occlusion
+new_track_thresh: 0.6   # Prevents ID swaps from noise
+track_buffer: 120       # 10 seconds memory (crucial for grappling/prolonged interactions)
+match_thresh: 0.65      # Most relaxed to handle extreme motion at low FPS
+fuse_score: True

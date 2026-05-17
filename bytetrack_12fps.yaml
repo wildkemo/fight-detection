@@ -1,11 +1,10 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-# ByteTrack tracker defaults for mode="track" (Adjusted for 12 FPS)
-# Docs: https://docs.ultralytics.com/modes/track/
+# ByteTrack tracker defaults for mode="track" (Refined for 12 FPS Baseline)
 
-tracker_type: bytetrack # (str) Tracker backend: botsort|bytetrack; choose bytetrack for the classic baseline
-track_high_thresh: 0.25 # (float) First-stage match threshold; raise for cleaner tracks, lower to keep more
-track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches; balances recovery vs drift
-new_track_thresh: 0.25 # (float) Start a new track if no match ≥ this; higher reduces false tracks
-track_buffer: 12 # (int) Scaled for 12 FPS (1 second memory). Default is 30 for 30 FPS.
-match_thresh: 0.8 # (float) Association similarity threshold (IoU/cost); tune with detector quality
-fuse_score: True # (bool) Fuse detection score with motion/IoU for matching; stabilizes weak detections
+tracker_type: bytetrack
+track_high_thresh: 0.4   # Balanced for general 12 FPS usage
+track_low_thresh: 0.1
+new_track_thresh: 0.4   
+track_buffer: 36        # 3 seconds memory at 12 FPS
+match_thresh: 0.7       # Relaxed for 12 FPS motion
+fuse_score: True
