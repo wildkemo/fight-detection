@@ -18,7 +18,8 @@ def process_video_directory(video_dir, output_dir, model, tracker_config, limit=
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    video_files = sorted([f for f in os.listdir(video_dir) if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))])
+    VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.mpg', '.mpeg')
+    video_files = sorted([f for f in os.listdir(video_dir) if f.lower().endswith(VIDEO_EXTS)])
     
     if limit:
         video_files = video_files[:limit]

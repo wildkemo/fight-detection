@@ -299,15 +299,21 @@ if __name__ == "__main__":
         if not os.path.exists(t_dir): continue
         os.makedirs(o_dir, exist_ok=True)
         
+        # Cache video files in the directory for faster lookup
+        all_video_files = os.listdir(v_dir)
+        video_lookup = {os.path.splitext(f)[0]: f for f in all_video_files}
+
         for tf in sorted(os.listdir(t_dir)):
             if not tf.endswith(".json"): continue
-            
+
             video_name = os.path.splitext(tf)[0]
-            video_path = next((os.path.join(v_dir, f"{video_name}{ext}") 
-                              for ext in ['.mp4', '.avi', '.mov', '.mkv'] 
-                              if os.path.exists(os.path.join(v_dir, f"{video_name}{ext}"))), None)
-            
-            if not video_path: continue
+            # Find the video file that matches the JSON's base name
+            actual_video_file = video_lookup.get(video_name)
+
+            if not actual_video_file:
+                continue
+
+            video_path = os.path.join(v_dir, actual_video_file)
             
             with open(os.path.join(t_dir, tf), 'r') as f:
                 track_data = json.load(f)
