@@ -25,6 +25,8 @@ class FeatureExtractor:
         self.RIGHT_HIP = 12
 
         self.TORSO_JOINTS = [5, 6, 11, 12]
+        self.UPPER_BODY = [0, 5, 6, 7, 8, 9, 10]
+        self.LOWER_BODY = [11, 12, 13, 14, 15, 16]
 
     # -------------------------
     # Normalization
@@ -67,8 +69,12 @@ class FeatureExtractor:
     # -------------------------
     def compute_motion(self, kpts):
         vel = np.diff(kpts, axis=0, prepend=kpts[:1])
-        energy = np.sum(vel ** 2, axis=(1, 2))[:, None]
-        return vel, energy
+        
+        # Split energy into upper and lower body to distinguish fighting from walking
+        upper_energy = np.sum(vel[:, self.UPPER_BODY] ** 2, axis=(1, 2))[:, None]
+        lower_energy = np.sum(vel[:, self.LOWER_BODY] ** 2, axis=(1, 2))[:, None]
+        
+        return vel, upper_energy, lower_energy
 
     # -------------------------
     # Interaction
@@ -109,8 +115,8 @@ class FeatureExtractor:
 
         norm_A, norm_B = self.normalize_skeletons(A, B)
 
-        vA, eA = self.compute_motion(norm_A)
-        vB, eB = self.compute_motion(norm_B)
+        vA, ueA, leA = self.compute_motion(norm_A)
+        vB, ueB, leB = self.compute_motion(norm_B)
 
         dist, closing, rel_v, crit = self.compute_interaction(
             norm_A, norm_B, vA, vB
@@ -126,8 +132,10 @@ class FeatureExtractor:
                 norm_B[i].flatten(),
                 vA[i].flatten(),
                 vB[i].flatten(),
-                eA[i],
-                eB[i],
+                ueA[i],
+                leA[i],
+                ueB[i],
+                leB[i],
                 dist[i],
                 closing[i],
                 rel_v[i].flatten(),
@@ -138,6 +146,7 @@ class FeatureExtractor:
             features.append(feat)
 
         return np.array(features)
+
 
 
 # =========================================================

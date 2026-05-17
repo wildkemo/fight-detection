@@ -56,11 +56,14 @@ def build_model(input_shape, num_classes=1):
     x = residual_block(x, filters=128, dilation_rate=4)
     x = residual_block(x, filters=128, dilation_rate=8)
     
-    # Aggregation - GlobalAveragePooling is better than MaxPooling for temporal signals
-    x = layers.GlobalAveragePooling1D()(x)
+    # Aggregation - Use both Average and Max pooling to capture steady motion and impacts
+    avg_pool = layers.GlobalAveragePooling1D()(x)
+    max_pool = layers.GlobalMaxPooling1D()(x)
+    x = layers.Concatenate()([avg_pool, max_pool])
     
     # Final classifier
     x = layers.Dense(64, activation='relu')(x)
+
     x = layers.Dropout(0.3)(x)
     outputs = layers.Dense(num_classes, activation='sigmoid')(x)
     
