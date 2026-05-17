@@ -9,7 +9,7 @@ Goal:
 Pipeline:
 Video -> Read Frame -> Luminance -> Tile Histograms -> Clip -> LUT -> Interpolate -> Save
 
-Author: Taher
+
 """
 
 import os

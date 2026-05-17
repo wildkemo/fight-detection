@@ -9,7 +9,7 @@ Goal:
 Pipeline:
 Video -> Read Frame -> Compute Min/Max -> Normalize -> Stretch -> Save
 
-Author: Taher
+
 """
 
 import os

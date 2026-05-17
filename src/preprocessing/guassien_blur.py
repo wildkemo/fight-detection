@@ -9,7 +9,7 @@ Goal:
 Pipeline:
 Video -> Read Frame -> Build Kernel -> Horizontal Pass -> Vertical Pass -> Save
 
-Author: Taher
+
 """
 
 import os
