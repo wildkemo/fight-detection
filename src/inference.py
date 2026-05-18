@@ -16,7 +16,6 @@ import tensorflow as tf
 
 from extract_pose import RTMPoseInferencer, restore_coords
 from build_sequences import FeatureExtractor
-from preprocessing.pipeline import FramePreprocessor
 
 # Colors for the dashboard
 COLOR_BG = (15, 15, 15)
@@ -187,7 +186,6 @@ class InferencePipeline:
         self.out = self.interpreter.get_output_details()
 
         self.feature_extractor = FeatureExtractor(sequence_length=36)
-        self.preprocessor = FramePreprocessor(target_w=1280, target_h=720)
 
         # state
         self.prev_centers = {}
@@ -408,9 +406,6 @@ class InferencePipeline:
             frames_to_write = 1 if last_idx == -1 else frame_idx - last_idx
             last_idx = frame_idx
 
-            # Apply Preprocessing
-            frame = self.preprocessor.process_frame(frame)
-
             # Proper Loop FPS
             curr_time = time.time()
             dt = curr_time - self.last_time
@@ -507,7 +502,7 @@ class InferencePipeline:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--source", required=True)
-    p.add_argument("--det_model", default="models/yolov8n.pt")
+    p.add_argument("--det_model", default="models/yolov8s.pt")
     p.add_argument("--pose_model", default="models/rtmpose-s-c54166.onnx")
     p.add_argument("--tcn_model", default="models/tcn_model.tflite")
     p.add_argument("--tracker", default="bytetrack_stable.yaml")
