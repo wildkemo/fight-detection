@@ -8,8 +8,6 @@ Goal:
 
 Pipeline:
 Video -> Read Frame -> Compute Min/Max -> Normalize -> Stretch -> Save
-
-
 """
 
 import os
@@ -31,71 +29,34 @@ VIDEO_EXTENSIONS = [".mp4", ".avi", ".mov", ".mkv"]
 
 def manual_contrast_stretch(frame):
     """
-    Apply contrast stretching manually per channel.
+    Apply contrast stretching manually per channel using vectorized numpy math.
 
     Formula:
         new = (pixel - min) * (255 / (max - min))
 
-    No histogram equalization or built-in enhancement used.
+    No cv2 histogram equalization or built-in enhancement used.
     """
+    stretched = np.empty_like(frame)
 
-    # Convert to float for safe math operations
-    h = frame.shape[0]
-    w = frame.shape[1]
-
-    stretched = np.zeros((h, w, 3), dtype=np.uint8)
-
-    # Process each channel manually
-    c = 0
-    while c < 3:
-
+    # Process each channel independently
+    for c in range(3):
         channel = frame[:, :, c]
+        
+        # Use numpy max/min for fast lookup across the array
+        min_val = channel.min()
+        max_val = channel.max()
 
-        # manual min/max (no np.min / np.max shortcuts if strictly "low-level" required)
-        min_val = 255
-        max_val = 0
-
-        i = 0
-        while i < h:
-            j = 0
-            while j < w:
-                val = channel[i][j]
-
-                if val < min_val:
-                    min_val = val
-                if val > max_val:
-                    max_val = val
-
-                j += 1
-            i += 1
-
-        # avoid division by zero
         if max_val == min_val:
-            c += 1
+            stretched[:, :, c] = channel
             continue
 
         scale = 255.0 / (max_val - min_val)
 
-        # apply transformation manually
-        i = 0
-        while i < h:
-            j = 0
-            while j < w:
-                val = channel[i][j]
-
-                new_val = int((val - min_val) * scale)
-
-                if new_val < 0:
-                    new_val = 0
-                elif new_val > 255:
-                    new_val = 255
-
-                stretched[i][j][c] = new_val
-                j += 1
-
-            i += 1
-
-        c += 1
+        # Vectorized arithmetic transformation
+        new_val = (channel.astype(np.float32) - min_val) * scale
+        
+        # Manual clip to valid bounds
+        stretched[:, :, c] = np.clip(new_val, 0, 255).astype(np.uint8)
 
     return stretched
 
@@ -144,7 +105,6 @@ def process_video(input_path, output_path, overwrite=False):
     frame_index = 0
 
     while True:
-
         success, frame = cap.read()
 
         if not success:
@@ -153,13 +113,10 @@ def process_video(input_path, output_path, overwrite=False):
         if frame is None:
             continue
 
-        # ============================
         # CONTRAST STRETCHING STEP
-        # ============================
         processed = manual_contrast_stretch(frame)
 
         writer.write(processed)
-
         frame_index += 1
 
         print(
@@ -188,29 +145,22 @@ def process_directory(input_dir, output_dir, overwrite=False):
     os.makedirs(output_dir, exist_ok=True)
 
     files = os.listdir(input_dir)
-
     video_files = []
 
-    # manual filtering
     for f in files:
         name = f.lower()
-
         for ext in VIDEO_EXTENSIONS:
             if name.endswith(ext):
                 video_files.append(f)
                 break
 
     video_files.sort()
-
     total = len(video_files)
 
-    i = 0
-    while i < total:
-
+    for i in range(total):
         file_name = video_files[i]
 
-        print()
-        print(f"========== VIDEO {i+1}/{total} ==========")
+        print(f"\n========== VIDEO {i+1}/{total} ==========")
         print(file_name)
 
         in_path = os.path.join(input_dir, file_name)
@@ -218,17 +168,13 @@ def process_directory(input_dir, output_dir, overwrite=False):
 
         process_video(in_path, out_path, overwrite)
 
-        i += 1
-
 
 # =========================================================
 # MAIN
 # =========================================================
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--input-root", type=str, default="data/videos")
     parser.add_argument("--output-root", type=str, default="data/videos_contrast")
     parser.add_argument("--overwrite", action="store_true")
@@ -238,18 +184,9 @@ if __name__ == "__main__":
     categories = ["Violence", "NonViolence"]
 
     for category in categories:
-
-        print()
-        print("=================================================")
-        print("CATEGORY:", category)
-        print("=================================================")
-
+        print(f"\n=================================================\nCATEGORY: {category}\n=================================================")
         in_dir = os.path.join(args.input_root, category)
         out_dir = os.path.join(args.output_root, category)
-
         process_directory(in_dir, out_dir, args.overwrite)
 
-    print()
-    print("====================================")
-    print("CONTRAST STRETCHING COMPLETE")
-    print("====================================")
+    print("\n====================================\nCONTRAST STRETCHING COMPLETE\n====================================")

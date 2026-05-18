@@ -8,8 +8,6 @@ Goal:
 
 Pipeline:
 Video -> Read Frame -> Build Kernel -> Horizontal Pass -> Vertical Pass -> Save
-
-
 """
 
 import os
@@ -40,10 +38,8 @@ def manual_gaussian_weight(offset, sigma):
     """
     Compute one sample of a 1D Gaussian function.
     """
-
     numerator = -(float(offset) * float(offset))
     denominator = 2.0 * float(sigma) * float(sigma)
-
     return math.exp(numerator / denominator)
 
 
@@ -51,148 +47,77 @@ def manual_build_gaussian_kernel(kernel_size, sigma):
     """
     Build and normalize a 1D Gaussian kernel manually.
     """
-
     if kernel_size < 3:
         kernel_size = 3
-
     if kernel_size % 2 == 0:
         kernel_size += 1
 
     center_index = kernel_size // 2
-
     raw_kernel = []
     kernel_sum = 0.0
 
     for kernel_index in range(kernel_size):
-
         offset = kernel_index - center_index
         weight = manual_gaussian_weight(offset, sigma)
-
         raw_kernel.append(weight)
         kernel_sum += weight
 
-    normalized_kernel = []
-
     if kernel_sum <= 0.0:
+        return [1.0 / float(kernel_size)] * kernel_size
 
-        uniform_value = 1.0 / float(kernel_size)
-
-        for kernel_index in range(kernel_size):
-            normalized_kernel.append(uniform_value)
-
-        return normalized_kernel
-
-    for kernel_index in range(kernel_size):
-        normalized_kernel.append(raw_kernel[kernel_index] / kernel_sum)
-
-    return normalized_kernel
-
-
-def manual_get_pixel_value(channel, row_index, col_index):
-    """
-    Read a pixel with edge clamping (border replication).
-    """
-
-    image_height = channel.shape[0]
-    image_width = channel.shape[1]
-
-    if row_index < 0:
-        row_index = 0
-    elif row_index >= image_height:
-        row_index = image_height - 1
-
-    if col_index < 0:
-        col_index = 0
-    elif col_index >= image_width:
-        col_index = image_width - 1
-
-    return float(channel[row_index, col_index])
+    return [w / kernel_sum for w in raw_kernel]
 
 
 def manual_convolve_horizontal(channel, kernel):
     """
-    Apply a 1D horizontal convolution using manual pixel loops.
+    Apply a 1D horizontal convolution using numpy vectorization.
     """
-
-    image_height = channel.shape[0]
-    image_width = channel.shape[1]
+    image_height, image_width = channel.shape
     kernel_radius = len(kernel) // 2
 
-    output_channel = np.zeros(
-        (image_height, image_width),
-        dtype=np.uint8
-    )
+    # Pad the channel manually to simulate border replication
+    padded = np.empty((image_height, image_width + 2 * kernel_radius), dtype=np.float32)
+    padded[:, kernel_radius:-kernel_radius] = channel
+    
+    # Fill padding with edge values
+    for i in range(kernel_radius):
+        padded[:, i] = channel[:, 0]
+        padded[:, -1 - i] = channel[:, -1]
 
-    for row_index in range(image_height):
+    # Vectorized accumulation across the entire image
+    output_channel = np.zeros_like(channel, dtype=np.float32)
+    for k_idx, k_val in enumerate(kernel):
+        # Slice and multiply
+        output_channel += padded[:, k_idx : k_idx + image_width] * k_val
 
-        for col_index in range(image_width):
-
-            weighted_sum = 0.0
-
-            for kernel_index in range(len(kernel)):
-
-                sample_col = col_index + kernel_index - kernel_radius
-                pixel_value = manual_get_pixel_value(
-                    channel,
-                    row_index,
-                    sample_col
-                )
-
-                weighted_sum += pixel_value * kernel[kernel_index]
-
-            blurred_value = int(weighted_sum + 0.5)
-
-            if blurred_value < MIN_OUTPUT:
-                blurred_value = MIN_OUTPUT
-            elif blurred_value > MAX_OUTPUT:
-                blurred_value = MAX_OUTPUT
-
-            output_channel[row_index, col_index] = blurred_value
-
-    return output_channel
+    # Clip and round
+    return np.clip(np.round(output_channel), MIN_OUTPUT, MAX_OUTPUT).astype(np.uint8)
 
 
 def manual_convolve_vertical(channel, kernel):
     """
-    Apply a 1D vertical convolution using manual pixel loops.
+    Apply a 1D vertical convolution using numpy vectorization.
     """
-
-    image_height = channel.shape[0]
-    image_width = channel.shape[1]
+    image_height, image_width = channel.shape
     kernel_radius = len(kernel) // 2
 
-    output_channel = np.zeros(
-        (image_height, image_width),
-        dtype=np.uint8
-    )
+    # Pad the channel manually to simulate border replication
+    padded = np.empty((image_height + 2 * kernel_radius, image_width), dtype=np.float32)
+    padded[kernel_radius:-kernel_radius, :] = channel
+    
+    # Fill padding with edge values
+    for i in range(kernel_radius):
+        padded[i, :] = channel[0, :]
+        padded[-1 - i, :] = channel[-1, :]
 
-    for row_index in range(image_height):
+    # Vectorized accumulation across the entire image
+    output_channel = np.zeros_like(channel, dtype=np.float32)
+    for k_idx, k_val in enumerate(kernel):
+        # Slice and multiply
+        output_channel += padded[k_idx : k_idx + image_height, :] * k_val
 
-        for col_index in range(image_width):
-
-            weighted_sum = 0.0
-
-            for kernel_index in range(len(kernel)):
-
-                sample_row = row_index + kernel_index - kernel_radius
-                pixel_value = manual_get_pixel_value(
-                    channel,
-                    sample_row,
-                    col_index
-                )
-
-                weighted_sum += pixel_value * kernel[kernel_index]
-
-            blurred_value = int(weighted_sum + 0.5)
-
-            if blurred_value < MIN_OUTPUT:
-                blurred_value = MIN_OUTPUT
-            elif blurred_value > MAX_OUTPUT:
-                blurred_value = MAX_OUTPUT
-
-            output_channel[row_index, col_index] = blurred_value
-
-    return output_channel
+    # Clip and round
+    return np.clip(np.round(output_channel), MIN_OUTPUT, MAX_OUTPUT).astype(np.uint8)
 
 
 def manual_blur_channel(channel, kernel_size, sigma):
@@ -200,12 +125,9 @@ def manual_blur_channel(channel, kernel_size, sigma):
     Separable Gaussian blur on one channel:
     horizontal pass, then vertical pass.
     """
-
     kernel = manual_build_gaussian_kernel(kernel_size, sigma)
-
     horizontal_result = manual_convolve_horizontal(channel, kernel)
     vertical_result = manual_convolve_vertical(horizontal_result, kernel)
-
     return vertical_result
 
 
@@ -213,7 +135,6 @@ def manual_gaussian_blur(frame, kernel_size, sigma):
     """
     Apply manual Gaussian blur to each BGR channel.
     """
-
     if frame is None:
         return None
 
@@ -221,19 +142,11 @@ def manual_gaussian_blur(frame, kernel_size, sigma):
         print("[ERROR] Expected a 3-channel BGR frame.")
         return frame
 
-    blue_channel = frame[:, :, 0]
-    green_channel = frame[:, :, 1]
-    red_channel = frame[:, :, 2]
+    blurred_blue = manual_blur_channel(frame[:, :, 0], kernel_size, sigma)
+    blurred_green = manual_blur_channel(frame[:, :, 1], kernel_size, sigma)
+    blurred_red = manual_blur_channel(frame[:, :, 2], kernel_size, sigma)
 
-    blurred_blue = manual_blur_channel(blue_channel, kernel_size, sigma)
-    blurred_green = manual_blur_channel(green_channel, kernel_size, sigma)
-    blurred_red = manual_blur_channel(red_channel, kernel_size, sigma)
-
-    output_frame = np.zeros(
-        frame.shape,
-        dtype=np.uint8
-    )
-
+    output_frame = np.empty_like(frame)
     output_frame[:, :, 0] = blurred_blue
     output_frame[:, :, 1] = blurred_green
     output_frame[:, :, 2] = blurred_red
@@ -263,12 +176,10 @@ def gaussian_blur_video(
     cap = cv2.VideoCapture(input_video_path)
 
     if not cap.isOpened():
-        print("[ERROR] Cannot open video:")
-        print(input_video_path)
+        print(f"[ERROR] Cannot open video: {input_video_path}")
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-
     if fps <= 0:
         fps = 30
 
@@ -277,12 +188,10 @@ def gaussian_blur_video(
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     output_dir = os.path.dirname(output_video_path)
-
     if output_dir != "":
         os.makedirs(output_dir, exist_ok=True)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
     writer = cv2.VideoWriter(
         output_video_path,
         fourcc,
@@ -291,20 +200,16 @@ def gaussian_blur_video(
     )
 
     if not writer.isOpened():
-        print("[ERROR] Cannot create output video:")
-        print(output_video_path)
+        print(f"[ERROR] Cannot create output video: {output_video_path}")
         cap.release()
         return
 
     current_frame = 0
 
     while True:
-
         success, frame = cap.read()
-
         if not success:
             break
-
         if frame is None:
             continue
 
@@ -318,7 +223,6 @@ def gaussian_blur_video(
             continue
 
         writer.write(output_frame)
-
         current_frame += 1
 
         print(
@@ -328,10 +232,8 @@ def gaussian_blur_video(
         )
 
     print()
-
     cap.release()
     writer.release()
-
     print(f"[DONE] {output_video_path}")
 
 
@@ -350,23 +252,9 @@ def process_directory(
     """
     Apply Gaussian blur to all videos inside a directory.
     """
-
     os.makedirs(output_directory, exist_ok=True)
-
     all_files = os.listdir(input_directory)
-
-    video_files = []
-
-    for file_name in all_files:
-
-        lower_name = file_name.lower()
-
-        for extension in VIDEO_EXTENSIONS:
-
-            if lower_name.endswith(extension):
-                video_files.append(file_name)
-                break
-
+    video_files = [f for f in all_files if any(f.lower().endswith(ext) for ext in VIDEO_EXTENSIONS)]
     video_files.sort()
 
     if limit is not None:
@@ -374,14 +262,8 @@ def process_directory(
 
     total_videos = len(video_files)
 
-    for index in range(total_videos):
-
-        file_name = video_files[index]
-
-        print()
-        print(f"========== VIDEO {index + 1}/{total_videos} ==========")
-        print(file_name)
-
+    for index, file_name in enumerate(video_files):
+        print(f"\n========== VIDEO {index + 1}/{total_videos} ==========\n{file_name}")
         input_path = os.path.join(input_directory, file_name)
         output_path = os.path.join(output_directory, file_name)
 
@@ -399,75 +281,21 @@ def process_directory(
 # =========================================================
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(
-        description="Manual Gaussian blur for surveillance videos."
-    )
-
-    parser.add_argument(
-        "--input-root",
-        type=str,
-        default="data/videos_clahe",
-        help="Input dataset root (CLAHE-processed videos)"
-    )
-
-    parser.add_argument(
-        "--output-root",
-        type=str,
-        default="data/videos_gaussian_blur",
-        help="Output dataset root"
-    )
-
-    parser.add_argument(
-        "--kernel-size",
-        type=int,
-        default=KERNEL_SIZE,
-        help="Odd kernel size (e.g. 5)"
-    )
-
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=SIGMA,
-        help="Gaussian sigma value"
-    )
-
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Limit number of videos per category"
-    )
-
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing output videos"
-    )
+    parser = argparse.ArgumentParser(description="Manual Gaussian blur for surveillance videos.")
+    parser.add_argument("--input-root", type=str, default="data/videos_clahe")
+    parser.add_argument("--output-root", type=str, default="data/videos_gaussian_blur")
+    parser.add_argument("--kernel-size", type=int, default=KERNEL_SIZE)
+    parser.add_argument("--sigma", type=float, default=SIGMA)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--overwrite", action="store_true")
 
     args = parser.parse_args()
-
-    categories = [
-        "Violence",
-        "NonViolence"
-    ]
+    categories = ["Violence", "NonViolence"]
 
     for category in categories:
-
-        print()
-        print("=================================================")
-        print(f"PROCESSING CATEGORY: {category}")
-        print("=================================================")
-
-        input_dir = os.path.join(
-            args.input_root,
-            category
-        )
-
-        output_dir = os.path.join(
-            args.output_root,
-            category
-        )
+        print(f"\n=================================================\nPROCESSING CATEGORY: {category}\n=================================================")
+        input_dir = os.path.join(args.input_root, category)
+        output_dir = os.path.join(args.output_root, category)
 
         if not os.path.isdir(input_dir):
             print(f"[WARNING] Input directory not found: {input_dir}")
@@ -482,7 +310,4 @@ if __name__ == "__main__":
             args.overwrite
         )
 
-    print()
-    print("====================================")
-    print("GAUSSIAN BLUR PREPROCESSING COMPLETE")
-    print("====================================")
+    print("\n====================================\nGAUSSIAN BLUR PREPROCESSING COMPLETE\n====================================")
