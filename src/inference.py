@@ -78,6 +78,39 @@ class FastStreamGrabber:
             self.thread.join(timeout=1)
         self.cap.release()
 
+class LocalVideoGrabber:
+    def __init__(self, source):
+        self.cap = cv2.VideoCapture(source)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open video file: {source}")
+
+        self.native_fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        self.out_frame_idx = 0
+        self.stopped = False
+
+    def read(self, last_idx=-1):
+        if self.stopped:
+            return False, None, self.out_frame_idx
+
+        if self.out_frame_idx <= last_idx:
+            return True, None, self.out_frame_idx
+
+        ret, frame = self.cap.read()
+        if not ret:
+            self.stopped = True
+            return False, None, self.out_frame_idx
+        
+        frame = cv2.resize(frame, (1280, 720))
+        self.out_frame_idx += 1
+        return True, frame, self.out_frame_idx - 1
+
+    def stop(self):
+        self.stopped = True
+        self.cap.release()
+
 # ---------------- RECORDING ----------------
 class RecordingManager:
     def __init__(self, fps, width, height, output_dir="data/recordings", pre_buffer_sec=2, cooldown_sec=3):
@@ -385,7 +418,10 @@ class InferencePipeline:
 
     def run(self, source):
         source = self.parse_source(source)
-        stream = FastStreamGrabber(source)
+        if isinstance(source, str) and os.path.isfile(source):
+            stream = LocalVideoGrabber(source)
+        else:
+            stream = FastStreamGrabber(source)
         rec = RecordingManager(stream.native_fps, 1280, 720)
 
         cv2.namedWindow("Fight Detection Dashboard", cv2.WINDOW_NORMAL)
