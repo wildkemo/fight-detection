@@ -8,11 +8,11 @@ from sklearn.model_selection import train_test_split
 
 class FeatureExtractor:
     """
-    Converts a 36-frame window of (Person A, Person B)
+    Converts a 12-frame window of (Person A, Person B)
     into a stable temporal feature representation.
     """
 
-    def __init__(self, sequence_length=36):
+    def __init__(self, sequence_length=12):
         self.seq_len = sequence_length
 
         # COCO keypoints
@@ -257,24 +257,24 @@ def build_sequences(poses_dir, output_dir, proximity_thresh=0.4):
                         buf["A"].append(A)
                         buf["B"].append(B)
 
-                        while len(buf["A"]) >= 36:
+                        while len(buf["A"]) >= 12:
 
                             feat = extractor.extract(
-                                np.array(buf["A"][:36]),
-                                np.array(buf["B"][:36])
+                                np.array(buf["A"][:12]),
+                                np.array(buf["B"][:12])
                             )
 
                             if FEATURE_DIM is None:
                                 FEATURE_DIM = feat.shape[1]
 
-                            if feat.shape != (36, FEATURE_DIM):
+                            if feat.shape != (12, FEATURE_DIM):
                                 continue
 
                             X.append(feat)
                             y.append(label_val)
 
-                            buf["A"] = buf["A"][18:]
-                            buf["B"] = buf["B"][18:]
+                            buf["A"] = buf["A"][6:]
+                            buf["B"] = buf["B"][6:]
 
                 for pid in list(buffers.keys()):
                     if pid not in present:

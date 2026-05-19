@@ -22,7 +22,7 @@ The system follows a 5-stage decoupled pipeline:
 *   **Requirement**: All features must be scale-invariant and translation-invariant to handle varying camera distances and resolutions.
 
 ### 3. Feature Engineering (The "Strong Signal" Rule)
-Every sequence sample (36 frames) must include:
+Every sequence sample (12 frames) must include:
 *   **Motion**: Velocity ($v$) and Acceleration ($a$) per joint.
 *   **Energy**: Intensity of movement ($\sum ||kpts_t - kpts_{t-1}||^2$).
 *   **Interaction**: Inter-person distance, closing speed, and relative velocity.

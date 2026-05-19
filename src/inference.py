@@ -218,7 +218,7 @@ class InferencePipeline:
         self.inp = self.interpreter.get_input_details()
         self.out = self.interpreter.get_output_details()
 
-        self.feature_extractor = FeatureExtractor(sequence_length=36)
+        self.feature_extractor = FeatureExtractor(sequence_length=12)
 
         # state
         self.prev_centers = {}
@@ -230,8 +230,8 @@ class InferencePipeline:
         # tuning
         self.proximity = args.proximity
         self.alpha = 0.45     
-        self.stride = 4       
-        self.threshold = 0.55 
+        self.stride = 1       
+        self.threshold = 0.5 
         self.process_every = 1 
         self.max_pose = args.max_pose_people
 
@@ -376,17 +376,17 @@ class InferencePipeline:
             pid = (a, b)
             active_pairs.add(pid)
             if pid not in self.pair_buffers:
-                self.pair_buffers[pid] = {"A": deque(maxlen=36), "B": deque(maxlen=36), "P": deque(maxlen=8)}
+                self.pair_buffers[pid] = {"A": deque(maxlen=12), "B": deque(maxlen=12), "P": deque(maxlen=8)}
 
             buf = self.pair_buffers[pid]
             buf["A"].append(k1); buf["B"].append(k2)
 
-            if len(buf["A"]) == 36 and idx % self.stride == 0:
+            if len(buf["A"]) == 12 and idx % self.stride == 0:
                 k1_seq = np.array(buf["A"])
                 k2_seq = np.array(buf["B"])
 
                 # Sequence-wide motion heuristic: check if there is enough dynamic movement
-                # across the 36-frame window to justify a TCN inference.
+                # across the 12-frame window to justify a TCN inference.
                 v1 = np.mean(np.linalg.norm(np.diff(k1_seq[:, :, :2], axis=0), axis=-1))
                 v2 = np.mean(np.linalg.norm(np.diff(k2_seq[:, :, :2], axis=0), axis=-1))
                 
@@ -409,8 +409,8 @@ class InferencePipeline:
                 del self.pair_buffers[pid]
 
         self.fight_votes.append(alert_raw)
-        # Alert robustness: 6/10 recent detections AND a high-confidence peak (>0.7)
-        alert = (sum(self.fight_votes) >= 6) and (max_p > 0.7)
+        # Alert robustness: 6/10 recent detections AND a high-confidence peak (>0.5)
+        alert = (sum(self.fight_votes) >= 6) and (max_p > 0.5)
 
         self.last_bboxes = boxes; self.last_kpts = kpts_now; self.last_alert = alert
         self.last_probs = new_probs; self.max_conf = max_p

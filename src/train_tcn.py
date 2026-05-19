@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # --- Configuration ---
 DATA_DIR = "data/sequences"
 MODEL_PATH = "models/tcn_model.tflite"
-SEQ_LENGTH = 36
+SEQ_LENGTH = 12
 BATCH_SIZE = 32
 EPOCHS = 50
 LEARNING_RATE = 1e-3
@@ -163,9 +163,22 @@ def main():
     test_probs = model.predict(X_test)
     test_preds = (test_probs >= best_thresh).astype(int)
     print("\n--- Final Test Report ---")
+    report = classification_report(y_test, test_preds, output_dict=True)
     print(classification_report(y_test, test_preds))
     
-    # 6. Export to TFLite
+    # 6. Save Metrics to JSON
+    metrics_path = "models/metrics.json"
+    import json
+    metrics_data = {
+        "optimal_threshold": float(best_thresh),
+        "test_report": report,
+        "history": {k: [float(v) for v in l] for k, l in history.history.items()}
+    }
+    with open(metrics_path, "w") as f:
+        json.dump(metrics_data, f, indent=4)
+    print(f"Metrics saved to: {metrics_path}")
+    
+    # 7. Export to TFLite
     convert_to_tflite(model, X_val, MODEL_PATH)
 
 if __name__ == "__main__":
