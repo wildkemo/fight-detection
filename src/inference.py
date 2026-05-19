@@ -218,7 +218,7 @@ class InferencePipeline:
         self.inp = self.interpreter.get_input_details()
         self.out = self.interpreter.get_output_details()
 
-        self.feature_extractor = FeatureExtractor(sequence_length=12)
+        self.feature_extractor = FeatureExtractor(sequence_length=60)
 
         # state
         self.prev_centers = {}
@@ -376,19 +376,25 @@ class InferencePipeline:
             pid = (a, b)
             active_pairs.add(pid)
             if pid not in self.pair_buffers:
-                self.pair_buffers[pid] = {"A": deque(maxlen=12), "B": deque(maxlen=12), "P": deque(maxlen=8)}
+                self.pair_buffers[pid] = {"A": deque(maxlen=60), "B": deque(maxlen=60), "P": deque(maxlen=8)}
 
             buf = self.pair_buffers[pid]
             buf["A"].append(k1); buf["B"].append(k2)
 
-            if len(buf["A"]) == 12 and idx % self.stride == 0:
+            if len(buf["A"]) >= 12 and idx % self.stride == 0:
                 k1_seq = np.array(buf["A"])
                 k2_seq = np.array(buf["B"])
 
+                # Early padding: if buffer isn't full (60), pad from the beginning
+                if len(k1_seq) < 60:
+                    pad_len = 60 - len(k1_seq)
+                    k1_seq = np.concatenate([np.repeat(k1_seq[:1], pad_len, axis=0), k1_seq], axis=0)
+                    k2_seq = np.concatenate([np.repeat(k2_seq[:1], pad_len, axis=0), k2_seq], axis=0)
+
                 # Sequence-wide motion heuristic: check if there is enough dynamic movement
-                # across the 12-frame window to justify a TCN inference.
-                v1 = np.mean(np.linalg.norm(np.diff(k1_seq[:, :, :2], axis=0), axis=-1))
-                v2 = np.mean(np.linalg.norm(np.diff(k2_seq[:, :, :2], axis=0), axis=-1))
+                # across the window to justify a TCN inference. Use MAX instead of MEAN.
+                v1 = np.max(np.linalg.norm(np.diff(k1_seq[:, :, :2], axis=0), axis=-1))
+                v2 = np.max(np.linalg.norm(np.diff(k2_seq[:, :, :2], axis=0), axis=-1))
                 
                 if (v1 + v2) / 2.0 / diagonal > 0.003:
                     f = self.feature_extractor.extract(k1_seq, k2_seq)

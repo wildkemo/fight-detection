@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # --- Configuration ---
 DATA_DIR = "data/sequences"
 MODEL_PATH = "models/tcn_model.tflite"
-SEQ_LENGTH = 12
+SEQ_LENGTH = 60
 BATCH_SIZE = 32
 EPOCHS = 50
 LEARNING_RATE = 1e-3
@@ -55,6 +55,7 @@ def build_model(input_shape, num_classes=1):
     x = residual_block(x, filters=64, dilation_rate=2)
     x = residual_block(x, filters=128, dilation_rate=4)
     x = residual_block(x, filters=128, dilation_rate=8)
+    x = residual_block(x, filters=256, dilation_rate=16)
     
     # Aggregation - Use both Average and Max pooling to capture steady motion and impacts
     avg_pool = layers.GlobalAveragePooling1D()(x)
