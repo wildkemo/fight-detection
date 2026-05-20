@@ -79,15 +79,17 @@ class FastStreamGrabber:
         self.cap.release()
 
 class LocalVideoGrabber:
-    def __init__(self, source):
+    def __init__(self, source, target_fps=12.0):
         self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open video file: {source}")
 
-        self.native_fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self.original_fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self.native_fps = min(target_fps, self.original_fps)
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
+        self.internal_frame_idx = 0
         self.out_frame_idx = 0
         self.stopped = False
 
@@ -98,11 +100,23 @@ class LocalVideoGrabber:
         if self.out_frame_idx <= last_idx:
             return True, None, self.out_frame_idx
 
+        # Calculate where we should be in the original video to maintain native_fps
+        target_internal_idx = int(self.out_frame_idx * (self.original_fps / self.native_fps))
+
+        # Skip frames using grab() which is faster as it doesn't decode
+        while self.internal_frame_idx < target_internal_idx:
+            ret = self.cap.grab()
+            if not ret:
+                self.stopped = True
+                return False, None, self.out_frame_idx
+            self.internal_frame_idx += 1
+
         ret, frame = self.cap.read()
         if not ret:
             self.stopped = True
             return False, None, self.out_frame_idx
         
+        self.internal_frame_idx += 1
         frame = cv2.resize(frame, (1280, 720))
         self.out_frame_idx += 1
         return True, frame, self.out_frame_idx - 1
@@ -550,6 +564,7 @@ if __name__ == "__main__":
     p.add_argument("--tracker", default="bytetrack_stable.yaml")
     p.add_argument("--device", default="cpu")
     p.add_argument("--proximity", type=float, default=0.25)
+    p.add_argument("--threshold", type=float, default=0.95)
     p.add_argument("--process_every", type=int, default=1) # Set to 1 for smoothness
     p.add_argument("--max_pose_people", type=int, default=2)
     p.add_argument("--pose_threads", type=int, default=4)
